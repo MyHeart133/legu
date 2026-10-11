@@ -5,8 +5,10 @@ import Foundation
 ///
 /// 协议要点:
 /// - WebSocket 到 speech.platform.bing.com,带 Sec-MS-GEC 时钟校验令牌(SHA256)
+/// - 握手必须带浏览器请求头(UA / Origin / Pragma 等)—— 裸连会被服务端 403 拒绝
+///   (2026-10 实测:无头 = 403,带头 = 稳定通过;对照 edge-tts 7.2.8 的 WSS_HEADERS)
 /// - 先发 speech.config(输出 mp3),再发 SSML;二进制帧前 2 字节为大端头长度
-/// - 收到 Path:turn.end 文本帧表示合成完毕
+/// - 收到 Path:turn.end 文本帧表示合成完毕;连接偶发被重置 → 自动重试
 final class EdgeTTSEngine: TTSEngine {
     let identifier = "edge"
     let displayName = "微软神经音色(在线)"
@@ -14,6 +16,7 @@ final class EdgeTTSEngine: TTSEngine {
 
     static let trustedToken = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
     static let secMsGecVersion = "1-143.0.3650.75"
+    static let browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
     static let wssURL = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=\(trustedToken)"
 
     /// 内置音色(14 个中文;动态列表失败时兜底)
@@ -40,7 +43,25 @@ final class EdgeTTSEngine: TTSEngine {
 
     // MARK: - 合成
 
+    /// 对外入口:网络抖动兜底,最多 3 次尝试(每次全新连接 + 新 GEC)
     func synthesize(text: String, voiceID: String, rate: Float) async throws -> Data? {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                return try await synthesizeOnce(text: text, voiceID: voiceID, rate: rate)
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                lastError = error
+                if attempt < 2 {
+                    try? await Task.sleep(nanoseconds: UInt64(350_000_000 * (attempt + 1)))
+                    if Task.isCancelled { throw CancellationError() }
+                }
+            }
+        }
+        throw lastError ?? SourceError.network("语音合成失败")
+    }
+
+    private func synthesizeOnce(text: String, voiceID: String, rate: Float) async throws -> Data? {
         let connectionID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let urlString = "\(Self.wssURL)&Sec-MS-GEC=\(Self.secMsGec())&Sec-MS-GEC-Version=\(Self.secMsGecVersion)&ConnectionId=\(connectionID)"
         guard let url = URL(string: urlString) else {
@@ -50,7 +71,7 @@ final class EdgeTTSEngine: TTSEngine {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         let session = URLSession(configuration: configuration)
-        let task = session.webSocketTask(with: url)
+        let task = session.webSocketTask(with: Self.handshakeRequest(url: url))
         task.resume()
         defer {
             task.cancel(with: .normalClosure, reason: nil)
@@ -109,6 +130,25 @@ final class EdgeTTSEngine: TTSEngine {
         }
         guard !audio.isEmpty else { throw SourceError.decode("语音合成失败(无响应)") }
         return audio
+    }
+
+    // MARK: - 握手(可测)
+
+    /// WebSocket 握手请求:必须伪装成 Edge 浏览器,否则服务端 403
+    static func handshakeRequest(url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue(browserUA, forHTTPHeaderField: "User-Agent")
+        request.setValue("chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold", forHTTPHeaderField: "Origin")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue("muid=\(randomMuid());", forHTTPHeaderField: "Cookie")
+        return request
+    }
+
+    /// 随机 MUID(32 位大写十六进制,edge-tts 同款)
+    static func randomMuid() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "")
     }
 
     // MARK: - 协议工具(可测)

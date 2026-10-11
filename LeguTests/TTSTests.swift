@@ -100,4 +100,26 @@ final class TTSTests: XCTestCase {
         XCTAssertEqual(EdgeTTSEngine.builtinVoices.count, 14)
         XCTAssertTrue(EdgeTTSEngine.builtinVoices.allSatisfy { !$0.name.isEmpty && !$0.detail.isEmpty })
     }
+
+    // MARK: 握手头(修复:裸连被 403)
+
+    func testEdgeHandshakeHeaders() {
+        let url = URL(string: "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1")!
+        let request = EdgeTTSEngine.handshakeRequest(url: url)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Pragma"), "no-cache")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache")
+        XCTAssertTrue((request.value(forHTTPHeaderField: "User-Agent") ?? "").contains("Edg/"))
+        XCTAssertTrue((request.value(forHTTPHeaderField: "Accept-Language") ?? "").contains("en-US"))
+        let cookie = request.value(forHTTPHeaderField: "Cookie") ?? ""
+        XCTAssertTrue(cookie.hasPrefix("muid="))
+        XCTAssertTrue(cookie.hasSuffix(";"))
+    }
+
+    func testEdgeMuidFormat() {
+        let muid = EdgeTTSEngine.randomMuid()
+        XCTAssertEqual(muid.count, 32)
+        XCTAssertTrue(muid.allSatisfy { $0.isHexDigit })
+        XCTAssertEqual(muid, muid.uppercased())
+    }
 }
