@@ -64,6 +64,7 @@ final class EdgeTTSEngine: TTSEngine {
             + "Content-Type:application/json; charset=utf-8\r\n"
             + "Path:speech.config\r\n\r\n"
             + #"{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"#
+            + "\r\n"
         try await task.send(.string(config))
 
         // 2. SSML 帧
