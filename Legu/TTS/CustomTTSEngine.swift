@@ -30,7 +30,7 @@ final class CustomTTSEngine: TTSEngine {
         [TTSVoice(id: config.id, name: displayName, detail: config.note.isEmpty ? "自定义朗读引擎" : config.note)]
     }
 
-    func synthesize(text: String, voiceID: String, rate: Float) async throws -> Data {
+    func synthesize(text: String, voiceID: String, rate: Float) async throws -> Data? {
         let (template, options) = LegadoContentSource.parseURLOptions(config.urlTemplate)
         let expandedURL = Self.expand(template, text: text, rate: rate)
         guard let url = URL(string: expandedURL) else {

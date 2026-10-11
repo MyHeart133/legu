@@ -40,7 +40,7 @@ final class EdgeTTSEngine: TTSEngine {
 
     // MARK: - 合成
 
-    func synthesize(text: String, voiceID: String, rate: Float) async throws -> Data {
+    func synthesize(text: String, voiceID: String, rate: Float) async throws -> Data? {
         let connectionID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let urlString = "\(Self.wssURL)&Sec-MS-GEC=\(Self.secMsGec())&Sec-MS-GEC-Version=\(Self.secMsGecVersion)&ConnectionId=\(connectionID)"
         guard let url = URL(string: urlString) else {
