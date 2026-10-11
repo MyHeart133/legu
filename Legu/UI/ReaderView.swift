@@ -333,28 +333,34 @@ struct ReaderView: View {
 
     private var catalogSheet: some View {
         NavigationStack {
-            List {
-                ForEach(chapters) { ch in
-                    Button {
-                        goToChapter(ch.index - 1)
-                        showCatalog = false
-                    } label: {
-                        HStack {
-                            Text(ch.title)
-                                .font(.subheadline)
-                                .lineLimit(1)
-                                .foregroundColor(.primary)
-                            Spacer()
-                            if ch.index - 1 == index {
-                                Image(systemName: "checkmark")
-                                    .font(.caption)
-                                    .foregroundColor(.accentColor)
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(chapters) { ch in
+                        Button {
+                            goToChapter(ch.index - 1)
+                            showCatalog = false
+                        } label: {
+                            HStack {
+                                Text(ch.title)
+                                    .font(.subheadline)
+                                    .lineLimit(1)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                if ch.index - 1 == index {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption)
+                                        .foregroundColor(.accentColor)
+                                }
                             }
                         }
+                        .id(ch.id)
                     }
                 }
+                .listStyle(.plain)
+                .onAppear {
+                    scrollCatalogToCurrent(proxy)
+                }
             }
-            .listStyle(.plain)
             .navigationTitle("目录(\(chapters.count) 章)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -362,6 +368,18 @@ struct ReaderView: View {
                     Button("关闭") { showCatalog = false }
                 }
             }
+        }
+    }
+
+    /// 打开目录时自动定位到当前章节(列表懒加载,稍等渲染后滚动)
+    private func scrollCatalogToCurrent(_ proxy: ScrollViewProxy) {
+        guard index >= 0, index < chapters.count else { return }
+        let target = chapters[index].id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            proxy.scrollTo(target, anchor: .center)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            proxy.scrollTo(target, anchor: .center)
         }
     }
 
