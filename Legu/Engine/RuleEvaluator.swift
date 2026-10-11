@@ -365,12 +365,12 @@ enum RuleEvaluator {
         return .tag(head.lowercased())
     }
 
-    /// "a.0" / "bookbox.2" → 提取尾部索引
+    /// "a.0" / "bookbox.2" / "a.-1" → 提取尾部索引
     private static func extractTrailingIndex(_ value: inout String, into seg: inout Segment) -> String {
         guard let dot = value.lastIndex(of: ".") else { return value }
         let tail = String(value[value.index(after: dot)...])
-        if !tail.isEmpty, tail.allSatisfy({ $0.isNumber }) {
-            seg.index = Int(tail)
+        if !tail.isEmpty, tail.allSatisfy({ $0.isNumber || $0 == "-" }), let n = Int(tail) {
+            seg.index = n
             value = String(value[..<dot])
         }
         return value

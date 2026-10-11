@@ -24,11 +24,11 @@ final class HTMLNodeTests: XCTestCase {
         let html = "<div><a href=\"/x\">A</a></div>"
         let root = HTMLParser.parse(html)
         let div = root.getElementsByTag("div").first!
-        let as = div.getElementsByTag("a")
-        XCTAssertEqual(as.count, 1)
-        XCTAssertEqual(as.first?.attr("href"), "/x")
+        let links = div.getElementsByTag("a")
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(links.first?.attr("href"), "/x")
         // 在 a 元素上再查 a:自身命中
-        let again = as[0].getElementsByTag("a")
+        let again = links[0].getElementsByTag("a")
         XCTAssertEqual(again.count, 1)
     }
 
