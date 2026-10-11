@@ -43,6 +43,13 @@ final class PageReaderModel: ObservableObject {
     private var typo = ReaderTypography()
     private var textSize: CGSize = .zero
 
+    // 听读同步(渲染坐标)
+    private var followChapter: Int?
+    private var followRange: NSRange?
+    private var currentText: String?
+    private var currentRanges: [NSRange] = []
+    private var currentTitle = ""
+
     private var baseChapter = 0
     private var chapterItems: [PageItem] = []
     private var prefetchedChapter: Int?
@@ -91,6 +98,47 @@ final class PageReaderModel: ObservableObject {
 
     func retry() {
         repaginate(anchorOffset: currentOffset)
+    }
+
+    // MARK: - 听读同步
+
+    /// 设置当前朗读句(渲染坐标);同章时重建高亮并翻到该句所在页
+    func setFollowHighlight(chapter: Int, range: NSRange?) {
+        if followChapter == chapter, followRange == range {
+            return
+        }
+        followChapter = chapter
+        followRange = range
+        guard chapter == baseChapter, currentText != nil, !currentRanges.isEmpty else { return }
+        rebuildHighlightItems()
+        if let range {
+            let idx = Paginator.pageIndex(forOffset: range.location, in: currentRanges)
+            if idx != anchorIndex, idx < currentRanges.count {
+                anchorIndex = idx
+                currentOffset = currentRanges[idx].location
+            }
+        }
+        revision += 1
+        onProgress?(baseChapter, currentOffset)
+    }
+
+    private func rebuildHighlightItems() {
+        guard let text = currentText, !currentRanges.isEmpty else { return }
+        let attributed = buildAttributed(text: text, chapterIndex: baseChapter)
+        chapterItems = Self.buildItems(
+            ranges: currentRanges, attributed: attributed,
+            chapterIndex: baseChapter, title: currentTitle
+        )
+        pages = chapterItems + nextItems
+    }
+
+    private func buildAttributed(text: String, chapterIndex: Int) -> NSAttributedString {
+        let highlight = (followChapter == chapterIndex) ? followRange : nil
+        return ReaderTextRenderer.attributedString(
+            text, typo: typo,
+            font: FontRegistry.shared.resolve(typo.fontID, bold: typo.bold),
+            highlight: highlight
+        )
     }
 
     /// 翻到某页后调用(手势/点击/程序切换)
@@ -156,10 +204,7 @@ final class PageReaderModel: ObservableObject {
                 if let cached = PaginationCache.shared.get(key) {
                     ranges = cached
                 } else {
-                    let attributed = ReaderTextRenderer.attributedString(
-                        text, typo: typo,
-                        font: FontRegistry.shared.resolve(typo.fontID, bold: typo.bold)
-                    )
+                    let attributed = self.buildAttributed(text: text, chapterIndex: chapterIndex)
                     let computed = await Task.detached(priority: .userInitiated) {
                         Paginator.paginate(attributed, size: size, shouldCancel: { token.isCancelled })
                     }.value
@@ -171,19 +216,24 @@ final class PageReaderModel: ObservableObject {
                 }
                 guard !token.isCancelled, chapterIndex == self.baseChapter else { return }
 
-                let attributed = ReaderTextRenderer.attributedString(
-                    text, typo: typo,
-                    font: FontRegistry.shared.resolve(typo.fontID, bold: typo.bold)
-                )
+                let attributed = self.buildAttributed(text: text, chapterIndex: chapterIndex)
                 let items = Self.buildItems(
                     ranges: ranges, attributed: attributed,
                     chapterIndex: chapterIndex, title: chapter.title
                 )
+                self.currentText = text
+                self.currentRanges = ranges
+                self.currentTitle = chapter.title
                 self.chapterItems = items
                 self.prefetchedChapter = nil
                 self.nextItems = []
                 self.pages = items
-                self.anchorIndex = Paginator.pageIndex(forOffset: anchorOffset, in: ranges)
+                // 若正在跟读本章,直接锚定到朗读句所在页
+                if self.followChapter == chapterIndex, let followRange = self.followRange {
+                    self.anchorIndex = Paginator.pageIndex(forOffset: followRange.location, in: ranges)
+                } else {
+                    self.anchorIndex = Paginator.pageIndex(forOffset: anchorOffset, in: ranges)
+                }
                 self.currentChapter = chapterIndex
                 self.currentOffset = items.isEmpty ? 0 : items[self.anchorIndex].range.location
                 self.revision += 1
@@ -225,10 +275,7 @@ final class PageReaderModel: ObservableObject {
                 if let cached = PaginationCache.shared.get(key) {
                     ranges = cached
                 } else {
-                    let attributed = ReaderTextRenderer.attributedString(
-                        text, typo: typo,
-                        font: FontRegistry.shared.resolve(typo.fontID, bold: typo.bold)
-                    )
+                    let attributed = self.buildAttributed(text: text, chapterIndex: next)
                     let computed = await Task.detached(priority: .utility) {
                         Paginator.paginate(attributed, size: size, shouldCancel: { token.isCancelled })
                     }.value
@@ -239,10 +286,7 @@ final class PageReaderModel: ObservableObject {
                     }
                 }
                 guard !token.isCancelled, self.baseChapter + 1 == next else { return }
-                let attributed = ReaderTextRenderer.attributedString(
-                    text, typo: typo,
-                    font: FontRegistry.shared.resolve(typo.fontID, bold: typo.bold)
-                )
+                let attributed = self.buildAttributed(text: text, chapterIndex: next)
                 let items = Self.buildItems(
                     ranges: ranges, attributed: attributed,
                     chapterIndex: next, title: chapter.title

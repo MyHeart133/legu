@@ -11,6 +11,9 @@ struct ReaderTextView: UIViewRepresentable {
     /// 内容 + 排版参数签名;变化时才重建 attributedText
     let revision: Int
     let onTap: () -> Void
+    /// 自动跟读:滚动到该范围(渲染坐标);scrollToken 变化时执行一次
+    var scrollTarget: NSRange? = nil
+    var scrollToken: Int = 0
 
     func makeUIView(context: Context) -> UITextView {
         let tv = UITextView()
@@ -32,6 +35,12 @@ struct ReaderTextView: UIViewRepresentable {
         if context.coordinator.revision != revision {
             context.coordinator.revision = revision
             tv.attributedText = attributed
+        }
+        if context.coordinator.scrollToken != scrollToken {
+            context.coordinator.scrollToken = scrollToken
+            if let target = scrollTarget {
+                context.coordinator.scrollTo(target, in: tv)
+            }
         }
     }
 
@@ -59,6 +68,7 @@ struct ReaderTextView: UIViewRepresentable {
     final class Coordinator: NSObject {
         var onTap: () -> Void
         var revision: Int = -1
+        var scrollToken: Int = -1
 
         init(onTap: @escaping () -> Void) {
             self.onTap = onTap
@@ -66,6 +76,55 @@ struct ReaderTextView: UIViewRepresentable {
 
         @objc func handleTap() {
             onTap()
+        }
+
+        /// 向上找外层滚动视图(UITextView 自身是 UIScrollView,需从 superview 开始找)
+        static func enclosingScrollView(of view: UIView) -> UIScrollView? {
+            var current = view.superview
+            while let v = current {
+                if let scroll = v as? UIScrollView {
+                    return scroll
+                }
+                current = v.superview
+            }
+            return nil
+        }
+
+        /// 把目标范围滚动到可视区(句子已在舒适区内则不动,避免逐句抖动)
+        func scrollTo(_ range: NSRange, in tv: UITextView, retry: Bool = true) {
+            let textLength = tv.attributedText.length
+            guard range.location >= 0, range.location < textLength else { return }
+            let safe = NSRange(
+                location: range.location,
+                length: max(0, min(range.length, textLength - range.location))
+            )
+            tv.layoutManager.ensureLayout(for: tv.textContainer)
+            let glyphRange = tv.layoutManager.glyphRange(forCharacterRange: safe, actualCharacterRange: nil)
+            var rect = tv.layoutManager.boundingRect(forGlyphRange: glyphRange, in: tv.textContainer)
+            rect.origin.x += tv.textContainerInset.left
+            rect.origin.y += tv.textContainerInset.top
+            guard let scroll = Self.enclosingScrollView(of: tv) else { return }
+            let rectInScroll = tv.convert(rect, to: scroll)
+            let inset = scroll.adjustedContentInset
+            let visibleTop = scroll.contentOffset.y + inset.top
+            let visibleBottom = visibleTop + scroll.bounds.height
+            let inComfortZone = rectInScroll.minY >= visibleTop + 24
+                && rectInScroll.maxY <= visibleBottom - 90
+            if inComfortZone {
+                return
+            }
+            var targetY = rectInScroll.minY - scroll.bounds.height * 0.30
+            let minY = -inset.top
+            let maxY = max(minY, scroll.contentSize.height - scroll.bounds.height + inset.bottom)
+            targetY = max(minY, min(targetY, maxY))
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: targetY), animated: true)
+            if retry {
+                // 布局可能尚未完成,稍后校正一次
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak tv] in
+                    guard let tv else { return }
+                    self.scrollTo(range, in: tv, retry: false)
+                }
+            }
         }
     }
 }

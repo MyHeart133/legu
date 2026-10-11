@@ -25,7 +25,19 @@ final class TTSService: NSObject, ObservableObject {
     /// 听读同步回调(章索引, 章内字符偏移)
     var onProgress: ((Int, Int) -> Void)?
 
+    /// 当前正在朗读的句子(渲染坐标,供阅读页高亮 / 自动跟页)
+    struct NowReading: Equatable {
+        var bookKey: String
+        var chapterIndex: Int
+        var offset: Int
+        var length: Int
+        var isPlaying: Bool
+    }
+
+    @Published private(set) var nowReading: NowReading?
+
     private var book: SourceBook?
+    private var bookKey = ""
     private var chapters: [SourceChapter] = []
     private weak var sourceStore: SourceStore?
     private var store: TTSStore?
@@ -93,10 +105,12 @@ final class TTSService: NSObject, ObservableObject {
         offset: Int
     ) {
         self.book = book
+        self.bookKey = OfflineStore.bookKey(sourceID: book.sourceID, sourceBookID: book.sourceBookID)
         self.chapters = chapters
         self.sourceStore = sourceStore
         self.bookTitle = book.title
         self.chapterCount = chapters.count
+        self.nowReading = nil
         sleepAtChapterEnd = false
         loadAndPlay(chapter: max(0, min(startChapter, max(0, chapters.count - 1))), offset: max(0, offset))
     }
@@ -114,6 +128,7 @@ final class TTSService: NSObject, ObservableObject {
         synthesizer.stopSpeaking(at: .immediate)
         cancelSynthTasks()
         state = .idle
+        nowReading = nil
         deactivateSession()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
@@ -125,6 +140,9 @@ final class TTSService: NSObject, ObservableObject {
             synthesizer.pauseSpeaking(at: .immediate)
         }
         state = .paused
+        if nowReading != nil {
+            nowReading?.isPlaying = false
+        }
         updateNowPlaying(playing: false)
     }
 
@@ -137,6 +155,9 @@ final class TTSService: NSObject, ObservableObject {
             synthesizer.continueSpeaking()
         }
         state = .playing
+        if nowReading != nil {
+            nowReading?.isPlaying = true
+        }
         updateNowPlaying(playing: true)
     }
 
@@ -250,7 +271,15 @@ final class TTSService: NSObject, ObservableObject {
         guard sentenceIndex >= 0, sentenceIndex < sentences.count else { return }
         let gen = generation
         let text = sentences[sentenceIndex]
-        onProgress?(chapterIndex, sentenceOffsets.indices.contains(sentenceIndex) ? sentenceOffsets[sentenceIndex] : 0)
+        let offset = sentenceOffsets.indices.contains(sentenceIndex) ? sentenceOffsets[sentenceIndex] : 0
+        nowReading = NowReading(
+            bookKey: bookKey,
+            chapterIndex: chapterIndex,
+            offset: offset,
+            length: text.utf16.count,
+            isPlaying: state == .playing
+        )
+        onProgress?(chapterIndex, offset)
         prefetchUpcoming()
 
         if engine.isRemote {

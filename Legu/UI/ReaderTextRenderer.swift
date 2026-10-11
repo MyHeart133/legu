@@ -13,7 +13,8 @@ enum ReaderTextRenderer {
     static func attributedString(
         _ content: String,
         typo: ReaderTypography,
-        font: ResolvedFont
+        font: ResolvedFont,
+        highlight: NSRange? = nil
     ) -> NSAttributedString {
         let text = ContentText.renderText(from: content)
         guard !text.isEmpty else { return NSAttributedString(string: "") }
@@ -44,10 +45,32 @@ enum ReaderTextRenderer {
             attrs[.kern] = CGFloat(typo.letterSpacing)
         }
         let result = NSMutableAttributedString(string: text, attributes: attrs)
+        if let highlight {
+            let length = result.length
+            let location = max(0, min(highlight.location, length))
+            let hlLength = max(0, min(highlight.length, length - location))
+            if hlLength > 0 {
+                result.addAttribute(
+                    .backgroundColor,
+                    value: highlightColor(for: typo.palette),
+                    range: NSRange(location: location, length: hlLength)
+                )
+            }
+        }
         if typo.punctuationCompression {
             applyPunctuationCompression(result, fontSize: CGFloat(typo.fontSize), letterSpacing: CGFloat(typo.letterSpacing))
         }
         return result
+    }
+
+    /// 朗读高亮色:浅色底用较浓淡黄,深色底用低透明度琥珀(按背景亮度自适应)
+    static func highlightColor(for palette: ReaderTypography.Palette) -> UIColor {
+        let bg = UIColor(hex: palette.background)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        bg.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        let alpha: CGFloat = luminance > 0.5 ? 0.55 : 0.30
+        return UIColor(red: 1.0, green: 0.83, blue: 0.29, alpha: alpha)
     }
 
     // MARK: - 标点挤压

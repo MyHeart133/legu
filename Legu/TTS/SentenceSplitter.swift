@@ -39,18 +39,22 @@ enum SentenceSplitter {
         return result
     }
 
-    /// 每句在规范化全文中的起始字符偏移(用于听读同步)
+    /// 每句在规范化(渲染)全文中的起始 UTF-16 偏移(用于听读同步 / 高亮)
     static func offsets(for sentences: [String], source text: String) -> [Int] {
         let full = ContentText.renderText(from: text)
         var offsets: [Int] = []
-        var cursor = 0
+        var cursorIdx = full.startIndex
+        var cursor16 = 0
         for sentence in sentences {
-            if let range = full.range(of: sentence, range: full.index(full.startIndex, offsetBy: min(cursor, full.count))..<full.endIndex) {
-                let start = full.distance(from: full.startIndex, to: range.lowerBound)
+            if let range = full.range(of: sentence, range: cursorIdx..<full.endIndex),
+               let lo16 = range.lowerBound.samePosition(in: full.utf16),
+               let up16 = range.upperBound.samePosition(in: full.utf16) {
+                let start = full.utf16.distance(from: full.utf16.startIndex, to: lo16)
                 offsets.append(start)
-                cursor = full.distance(from: full.startIndex, to: range.upperBound)
+                cursorIdx = range.upperBound
+                cursor16 = full.utf16.distance(from: full.utf16.startIndex, to: up16)
             } else {
-                offsets.append(cursor)
+                offsets.append(cursor16)
             }
         }
         return offsets

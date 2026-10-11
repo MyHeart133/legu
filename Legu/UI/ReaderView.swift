@@ -25,6 +25,11 @@ struct ReaderView: View {
     @StateObject private var pageModel = PageReaderModel()
     @ObservedObject private var downloads = DownloadManager.shared
     @State private var downloadedFiles: Set<String> = []
+    @ObservedObject private var tts = TTSService.shared
+    @State private var followRendered: NSRange?
+    @State private var followScrollToken = 0
+    @State private var following = true
+    @State private var loadedIndex = -1
 
     init(book: SourceBook, sourceName: String, chapters: [SourceChapter], initialIndex: Int, initialOffset: Int? = nil) {
         self.book = book
@@ -46,11 +51,13 @@ struct ReaderView: View {
         (index >= 0 && index < chapters.count) ? chapters[index] : nil
     }
 
-    /// 内容 + 排版签名(变化时重建文本视图)
+    /// 内容 + 排版 + 跟读高亮签名(变化时重建文本视图)
     private var textRevision: Int {
         var hasher = Hasher()
         hasher.combine(content)
         hasher.combine(typo)
+        hasher.combine(followRendered?.location ?? -1)
+        hasher.combine(followRendered?.length ?? -1)
         return hasher.finalize()
     }
 
@@ -103,6 +110,13 @@ struct ReaderView: View {
                     offset: offset
                 )
             }
+            syncFollow()
+        }
+        .onChange(of: tts.nowReading) { _, _ in
+            syncFollow()
+        }
+        .onChange(of: index) { _, _ in
+            syncFollow()
         }
     }
 
@@ -137,9 +151,13 @@ struct ReaderView: View {
                     .padding(.top, 40)
                 } else {
                     ReaderTextView(
-                        attributed: ReaderTextRenderer.attributedString(content, typo: typo, font: resolvedFont),
+                        attributed: ReaderTextRenderer.attributedString(
+                            content, typo: typo, font: resolvedFont, highlight: followRendered
+                        ),
                         revision: textRevision,
-                        onTap: { toggleControls() }
+                        onTap: { toggleControls() },
+                        scrollTarget: followRendered,
+                        scrollToken: followScrollToken
                     )
                     nextChapterButton
                         .padding(.top, 30)
@@ -201,6 +219,9 @@ struct ReaderView: View {
         }
         .onAppear {
             pageModel.onChapterChanged = { newChapter in
+                if let nr = ttsHighlight, nr.chapterIndex != newChapter {
+                    following = false
+                }
                 if newChapter != index {
                     index = newChapter
                 }
@@ -302,7 +323,7 @@ struct ReaderView: View {
                 barButton("上一章", "chevron.left") { goToChapter(index - 1) }
                     .disabled(index <= 0)
                 barButton("目录", "list.bullet") { showCatalog = true }
-                barButton("听书", "headphones") { showListening = true }
+                barButton(ttsHighlight == nil ? "听书" : "听书中", "headphones") { showListening = true }
                 barButton("排版", "textformat.size") {
                     withAnimation(.easeInOut(duration: 0.16)) {
                         showTypoPanel.toggle()
@@ -447,6 +468,57 @@ struct ReaderView: View {
         if typo.readerMode != "scroll" {
             pageModel.jumpTo(chapter: clamped, offset: 0)
         }
+        // 手动翻章:回到朗读章则恢复跟随,翻去别处则暂停跟随
+        if let nr = ttsHighlight {
+            following = (nr.chapterIndex == clamped)
+        }
+    }
+
+    // MARK: - 听读同步(高亮 + 自动跟页)
+
+    /// 当前朗读会话是否属于本书
+    private var ttsHighlight: TTSService.NowReading? {
+        guard let nr = tts.nowReading, nr.bookKey == offlineKey else { return nil }
+        return nr
+    }
+
+    /// 把阅读位置同步到朗读进度(高亮当前句;跟随中则自动翻章/翻页)
+    private func syncFollow() {
+        guard let nr = ttsHighlight else {
+            followRendered = nil
+            if typo.readerMode != "scroll" {
+                pageModel.setFollowHighlight(chapter: index, range: nil)
+            }
+            return
+        }
+        let range = NSRange(location: max(0, nr.offset), length: max(1, nr.length))
+        if nr.chapterIndex == index {
+            following = true
+            if typo.readerMode == "scroll" {
+                guard loadedIndex == index, !content.isEmpty else { return }
+                if followRendered != range {
+                    followRendered = range
+                    followScrollToken += 1
+                }
+            } else {
+                pageModel.setFollowHighlight(chapter: nr.chapterIndex, range: range)
+            }
+        } else if following {
+            // 自动翻到朗读章(滚动模式等内容加载完成后由 loadContent 再同步)
+            if typo.readerMode != "scroll" {
+                pageModel.setFollowHighlight(chapter: nr.chapterIndex, range: range)
+            }
+            index = max(0, min(nr.chapterIndex, chapters.count - 1))
+            if typo.readerMode != "scroll" {
+                pageModel.jumpTo(chapter: index, offset: nr.offset)
+            }
+        } else {
+            // 用户翻去别处阅读:不打扰,清掉高亮
+            followRendered = nil
+            if typo.readerMode != "scroll" {
+                pageModel.setFollowHighlight(chapter: index, range: nil)
+            }
+        }
     }
 
     private func saveProgress(_ chapter: SourceChapter) {
@@ -471,8 +543,10 @@ struct ReaderView: View {
             content = cached
             errorText = nil
             loading = false
+            loadedIndex = index
             saveProgress(chapter)
             prefetchNext()
+            syncFollow()
             return
         }
         loading = true
@@ -481,8 +555,10 @@ struct ReaderView: View {
         do {
             let text = try await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
             content = text
+            loadedIndex = index
             saveProgress(chapter)
             prefetchNext()
+            syncFollow()
         } catch {
             errorText = "正文加载失败:\(error.localizedDescription)"
         }
