@@ -117,6 +117,6 @@ final class ReaderTypographyTests: XCTestCase {
         tv.textContainer.lineFragmentPadding = 0
         tv.attributedText = s
         tv.frame = CGRect(x: 0, y: 0, width: 320, height: 50)
-        return tv.sizeThatFits(CGSize(width: 320, height: .greatestFiniteMagnitude)).height
+        return tv.sizeThatFits(CGSize(width: 320, height: CGFloat.greatestFiniteMagnitude)).height
     }
 }
