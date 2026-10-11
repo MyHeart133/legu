@@ -70,7 +70,7 @@ struct ShelfRow: View {
     }
 }
 
-/// 从书架打开:先加载目录,再进阅读器
+/// 从书架打开:先取目录(缓存优先),再进阅读器
 struct ShelfBookOpenerView: View {
     let book: ShelfBook
 
@@ -103,7 +103,7 @@ struct ShelfBookOpenerView: View {
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                     Button("重试") {
-                        Task { await load() }
+                        Task { await load(useCache: false) }
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -111,23 +111,32 @@ struct ShelfBookOpenerView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task { await load() }
+        .task { await load(useCache: true) }
     }
 
-    private func load() async {
+    private func load(useCache: Bool) async {
         state = .loading
         guard let source = sourceStore.source(forBookSourceID: book.sourceID) else {
             errorText = "找不到对应书源(可能已被删除)\n请回到「搜索」重新找这本书"
             state = .failed
             return
         }
+        let key = BookCache.tocKey(sourceID: book.sourceID, bookID: book.sourceBookID)
+        if useCache, let cached = BookCache.shared.toc(for: key), !cached.isEmpty {
+            chapters = cached
+            state = .ready
+            return
+        }
         do {
-            let list = try await source.fetchChapterList(book.sourceBookID)
+            let list = try await HTTP.retrying {
+                try await source.fetchChapterList(book.sourceBookID)
+            }
             guard !list.isEmpty else {
                 errorText = "目录为空"
                 state = .failed
                 return
             }
+            BookCache.shared.setToc(list, for: key)
             chapters = list
             state = .ready
         } catch {
@@ -137,78 +146,76 @@ struct ShelfBookOpenerView: View {
     }
 }
 
-/// 书籍详情(搜索结果点入)
+/// 书籍详情(搜索结果点入;支持多来源切换)
 struct BookDetailView: View {
-    let book: SourceBook
-    let sourceName: String
+    let alternatives: [BookAlternative]
 
     @EnvironmentObject var shelf: ShelfStore
     @EnvironmentObject var sourceStore: SourceStore
 
+    @State private var current: BookAlternative
     @State private var detail: SourceBook
     @State private var chapters: [SourceChapter] = []
     @State private var loading = true
     @State private var errorText: String?
 
-    init(book: SourceBook, sourceName: String) {
-        self.book = book
-        self.sourceName = sourceName
-        _detail = State(initialValue: book)
+    init(book: SourceBook, sourceName: String, alternatives: [BookAlternative] = []) {
+        var alts = alternatives
+        let primary = BookAlternative(sourceID: book.sourceID, sourceName: sourceName, book: book)
+        if alts.isEmpty {
+            alts = [primary]
+        } else if alts[0].book != book {
+            alts.insert(primary, at: 0)
+        }
+        self.alternatives = alts
+        _current = State(initialValue: alts[0])
+        _detail = State(initialValue: alts[0].book)
     }
 
     private var onShelf: Bool {
-        shelf.isOnShelf(sourceID: book.sourceID, sourceBookID: book.sourceBookID)
+        shelf.isOnShelf(sourceID: current.book.sourceID, sourceBookID: current.book.sourceBookID)
     }
 
     var body: some View {
         List {
             Section {
-                HStack(alignment: .top, spacing: 14) {
-                    CoverView(url: detail.cover, title: detail.title, width: 80, height: 108)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(detail.title).font(.headline)
-                        Text(detail.author.isEmpty ? "佚名" : detail.author)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Text(sourceName)
-                            .font(.caption)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.gray.opacity(0.15))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                        if !detail.subjects.isEmpty {
-                            Text(detail.subjects.prefix(3).joined(separator: " · "))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .lineLimit(2)
-                        }
-                        HStack(spacing: 10) {
-                            NavigationLink {
-                                ReaderView(
-                                    book: detail,
-                                    sourceName: sourceName,
-                                    chapters: chapters,
-                                    initialIndex: 0
-                                )
-                            } label: {
-                                Text("开始阅读")
-                                    .font(.subheadline.bold())
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(chapters.isEmpty)
+                header
+            }
 
-                            Button {
-                                _ = shelf.add(detail, sourceName: sourceName)
-                            } label: {
-                                Text(onShelf ? "已在书架" : "加入书架")
-                                    .font(.subheadline)
+            if alternatives.count > 1 {
+                Section("来源(\(alternatives.count))") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(alternatives) { alt in
+                                Button {
+                                    switchTo(alt)
+                                } label: {
+                                    Text(alt.sourceName)
+                                        .font(.caption)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(
+                                            alt.id == current.id
+                                                ? Color.accentColor.opacity(0.16)
+                                                : Color.gray.opacity(0.12)
+                                        )
+                                        .foregroundColor(alt.id == current.id ? .accentColor : .primary)
+                                        .clipShape(Capsule())
+                                        .overlay(
+                                            Capsule().stroke(
+                                                alt.id == current.id
+                                                    ? Color.accentColor
+                                                    : Color.gray.opacity(0.25),
+                                                lineWidth: alt.id == current.id ? 1.5 : 1
+                                            )
+                                        )
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.bordered)
-                            .disabled(onShelf)
                         }
+                        .padding(.vertical, 2)
                     }
                 }
-                .padding(.vertical, 4)
             }
 
             if let summary = detail.summary, !summary.isEmpty {
@@ -223,19 +230,23 @@ struct BookDetailView: View {
                 if loading {
                     HStack {
                         ProgressView()
-                        Text("加载目录…").font(.subheadline).foregroundColor(.secondary)
+                        Text("加载目录…")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
                     }
                 } else if let e = errorText {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(e).font(.subheadline).foregroundColor(.secondary)
-                        Button("重试") { Task { await load() } }
+                        Text(e)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Button("重试") { Task { await load(useCache: false) } }
                     }
                 } else {
                     ForEach(chapters) { ch in
                         NavigationLink {
                             ReaderView(
-                                book: detail,
-                                sourceName: sourceName,
+                                book: current.book,
+                                sourceName: current.sourceName,
                                 chapters: chapters,
                                 initialIndex: max(0, ch.index - 1)
                             )
@@ -252,20 +263,92 @@ struct BookDetailView: View {
         }
         .navigationTitle(detail.title)
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        .task(id: current.id) { await load(useCache: true) }
     }
 
-    private func load() async {
-        guard let source = sourceStore.source(forBookSourceID: book.sourceID) else {
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            CoverView(url: detail.cover, title: detail.title, width: 80, height: 108)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(detail.title)
+                    .font(.headline)
+                Text(detail.author.isEmpty ? "佚名" : detail.author)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Text(current.sourceName)
+                    .font(.caption)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.gray.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                if !detail.subjects.isEmpty {
+                    Text(detail.subjects.prefix(3).joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+                HStack(spacing: 10) {
+                    NavigationLink {
+                        ReaderView(
+                            book: current.book,
+                            sourceName: current.sourceName,
+                            chapters: chapters,
+                            initialIndex: 0
+                        )
+                    } label: {
+                        Text("开始阅读")
+                            .font(.subheadline.bold())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(chapters.isEmpty)
+
+                    Button {
+                        _ = shelf.add(current.book, sourceName: current.sourceName)
+                    } label: {
+                        Text(onShelf ? "已在书架" : "加入书架")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(onShelf)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func switchTo(_ alt: BookAlternative) {
+        guard alt.id != current.id else { return }
+        current = alt
+        detail = alt.book
+    }
+
+    private func load(useCache: Bool) async {
+        loading = true
+        errorText = nil
+        chapters = []
+        guard let source = sourceStore.source(forBookSourceID: current.sourceID) else {
             errorText = "找不到对应书源"
             loading = false
             return
         }
-        if let d = try? await source.fetchDetail(book.sourceBookID) {
+        let key = BookCache.tocKey(sourceID: current.sourceID, bookID: current.book.sourceBookID)
+        if useCache, let cached = BookCache.shared.toc(for: key), !cached.isEmpty {
+            chapters = cached
+            loading = false
+            if let d = try? await source.fetchDetail(current.book.sourceBookID) {
+                detail = d
+            }
+            return
+        }
+        if let d = try? await source.fetchDetail(current.book.sourceBookID) {
             detail = d
         }
         do {
-            chapters = try await source.fetchChapterList(book.sourceBookID)
+            let list = try await HTTP.retrying {
+                try await source.fetchChapterList(current.book.sourceBookID)
+            }
+            BookCache.shared.setToc(list, for: key)
+            chapters = list
         } catch {
             errorText = "目录加载失败:\(error.localizedDescription)"
         }

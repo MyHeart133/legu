@@ -12,6 +12,12 @@ struct LeguApp: App {
                 .environmentObject(sourceStore)
                 .environmentObject(shelfStore)
                 .environmentObject(settingsStore)
+                .task {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    await MainActor.run {
+                        sourceStore.importBundledIfNeeded()
+                    }
+                }
         }
     }
 }

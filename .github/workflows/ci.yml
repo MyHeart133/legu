@@ -86,6 +86,11 @@ jobs:
             CONFIGURATION_BUILD_DIR="$PWD/dist-ipa" \
             build
 
+      - name: Verify bundled resources
+        run: |
+          test -f dist-ipa/Legu.app/BundledSources.json && echo "BundledSources.json OK"
+          ls -la dist-ipa/Legu.app/
+
       - name: Package unsigned IPA
         run: |
           mkdir -p Payload

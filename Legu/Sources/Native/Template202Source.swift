@@ -67,7 +67,7 @@ final class Template202Source: ContentSource {
         let capped = Array(rest.prefix(300))
         let session = self.session
         let base = config.base
-        for batch in stride(from: 0, to: capped.count, by: 6).map({ Array(capped[$0..<min($0 + 6, capped.count)]) }) {
+        for batch in stride(from: 0, to: capped.count, by: 12).map({ Array(capped[$0..<min($0 + 12, capped.count)]) }) {
             await withTaskGroup(of: [SourceChapter].self) { group in
                 for path in batch {
                     group.addTask {

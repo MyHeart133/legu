@@ -19,6 +19,7 @@ final class SourceStore: ObservableObject {
     @Published private(set) var records: [SourceRecord] = []
 
     private let fileURL: URL
+    private var sourceCache: [String: ContentSource] = [:]
 
     init() {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -54,7 +55,7 @@ final class SourceStore: ObservableObject {
         }
     }
 
-    /// 内置源的站点根地址(导入去重用)
+    /// 内置源站点(导入去重用)
     static let nativeBaseURLs: [String: String] = [
         "qimao": "https://api-bc.wtzw.com",
         "fanqie": "https://fanqienovel.com",
@@ -67,6 +68,19 @@ final class SourceStore: ObservableObject {
         "dmxsw": "https://m.dmxsw.org",
         "shuku52": "https://www.52shuku.net",
     ]
+
+    /// 首次运行导入打包书源(302 个,来自 xiu2 + yiove 合集)
+    func importBundledIfNeeded() {
+        let flagKey = "legu.bundled.v2.imported"
+        if UserDefaults.standard.bool(forKey: flagKey) { return }
+        guard let url = Bundle.main.url(forResource: "BundledSources", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else { return }
+        let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        let summary = importSources(jsonText: text)
+        if summary.added + summary.skipped > 0 {
+            UserDefaults.standard.set(true, forKey: flagKey)
+        }
+    }
 
     // MARK: - 持久化
 
@@ -82,6 +96,18 @@ final class SourceStore: ObservableObject {
         guard let idx = records.firstIndex(where: { $0.id == id }) else { return }
         records[idx].enabled = enabled
         save()
+    }
+
+    /// 分组批量启用/停用
+    func setEnabled(ids: [String], _ enabled: Bool) {
+        var changed = false
+        for id in ids {
+            if let idx = records.firstIndex(where: { $0.id == id }) {
+                records[idx].enabled = enabled
+                changed = true
+            }
+        }
+        if changed { save() }
     }
 
     func remove(ids: [String]) {
@@ -110,6 +136,21 @@ final class SourceStore: ObservableObject {
         guard !models.isEmpty else {
             return ImportSummary(added: 0, skipped: 0, failed: 1)
         }
+
+        // 预构建现有站点集合(避免逐个线性扫描导致的 O(n²) 解码)
+        var existingIDs = Set<String>()
+        var existingBases = Set<String>()
+        for r in records {
+            existingIDs.insert(r.id)
+            if let nativeID = r.nativeID, let nb = Self.nativeBaseURLs[nativeID] {
+                existingBases.insert(nb)
+            } else if let json = r.legadoJSON,
+                      let m = LegadoSource.decodeList(json).first,
+                      let b = m.cleanBaseURL {
+                existingBases.insert(b)
+            }
+        }
+
         var added = 0
         var skipped = 0
         var failed = 0
@@ -119,23 +160,7 @@ final class SourceStore: ObservableObject {
                 continue
             }
             let id = "legado:" + LegadoContentSource.stableID(base + "|" + model.displayTitle)
-            if records.contains(where: { $0.id == id }) {
-                skipped += 1
-                continue
-            }
-            // 按站点去重(同 URL 已有源则跳过)
-            if records.contains(where: { existing in
-                if let nativeID = existing.nativeID,
-                   Self.nativeBaseURLs[nativeID] == base {
-                    return true
-                }
-                if let json = existing.legadoJSON,
-                   let em = LegadoSource.decodeList(json).first,
-                   let ebase = em.cleanBaseURL {
-                    return ebase == base
-                }
-                return false
-            }) {
+            if existingIDs.contains(id) || existingBases.contains(base) {
                 skipped += 1
                 continue
             }
@@ -153,6 +178,8 @@ final class SourceStore: ObservableObject {
                 nativeID: nil,
                 legadoJSON: jsonText
             ))
+            existingIDs.insert(id)
+            existingBases.insert(base)
             added += 1
         }
         save()
@@ -170,13 +197,19 @@ final class SourceStore: ObservableObject {
     }
 
     func makeSource(_ record: SourceRecord) -> ContentSource? {
+        if let cached = sourceCache[record.id] {
+            return cached
+        }
+        var built: ContentSource? = nil
         if let nativeID = record.nativeID {
-            return NativeSources.make(nativeID)
+            built = NativeSources.make(nativeID)
+        } else if let json = record.legadoJSON, let model = LegadoSource.decodeList(json).first {
+            built = LegadoContentSource(model: model)
         }
-        if let json = record.legadoJSON, let model = LegadoSource.decodeList(json).first {
-            return LegadoContentSource(model: model)
+        if let built {
+            sourceCache[record.id] = built
         }
-        return nil
+        return built
     }
 
     /// 书籍来源 ID → 内容源
@@ -185,12 +218,19 @@ final class SourceStore: ObservableObject {
         return makeSource(record)
     }
 
-    /// 启用中的内容源(搜索用)
+    /// 启用中的内容源(搜索用;内置源排前,结果先到)
     var enabledSources: [(id: String, name: String, source: ContentSource)] {
-        records.filter { $0.enabled }.compactMap { record in
-            guard let source = makeSource(record) else { return nil }
-            return (id: record.id, name: record.name, source: source)
-        }
+        records.filter { $0.enabled }
+            .sorted { a, b in
+                let an = a.isNative ? 0 : 1
+                let bn = b.isNative ? 0 : 1
+                if an != bn { return an < bn }
+                return a.name < b.name
+            }
+            .compactMap { record in
+                guard let source = makeSource(record) else { return nil }
+                return (id: record.id, name: record.name, source: source)
+            }
     }
 
     var enabledCount: Int { records.filter { $0.enabled }.count }

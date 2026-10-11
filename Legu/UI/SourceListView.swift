@@ -9,9 +9,20 @@ struct SourceListView: View {
         NavigationStack {
             List {
                 ForEach(sourceStore.grouped, id: \.group) { section in
-                    Section(section.group) {
+                    Section {
                         ForEach(section.records) { record in
                             SourceRow(record: record)
+                        }
+                    } header: {
+                        HStack {
+                            Text(section.group)
+                            Spacer()
+                            Text("\(section.records.filter { $0.enabled }.count)/\(section.records.count)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Toggle("", isOn: groupBinding(section.records))
+                                .labelsHidden()
+                                .scaleEffect(0.8)
                         }
                     }
                 }
@@ -42,6 +53,16 @@ struct SourceListView: View {
                 ImportSheet()
             }
         }
+    }
+
+    /// 分组开关(整组启用/停用)
+    private func groupBinding(_ records: [SourceRecord]) -> Binding<Bool> {
+        Binding(
+            get: { records.contains { $0.enabled } },
+            set: { on in
+                sourceStore.setEnabled(ids: records.map { $0.id }, on)
+            }
+        )
     }
 }
 

@@ -38,7 +38,7 @@ final class HetushuSource: ContentSource {
         guard let url = URL(string: "\(Self.base)/book/\(bookID)/index.html") else {
             throw SourceError.network("书目标识无效")
         }
-        let html = try await HTTP.fetchHTML(url, session: session)
+        let html = try await HTTP.fetchHTML(url, session: session, headers: ["Referer": Self.base + "/"])
         guard let book = Self.parseDetail(html, bookID: bookID) else {
             throw SourceError.notFound
         }
@@ -49,7 +49,7 @@ final class HetushuSource: ContentSource {
         guard let url = URL(string: "\(Self.base)/book/\(bookID)/index.html") else {
             throw SourceError.network("书目标识无效")
         }
-        let html = try await HTTP.fetchHTML(url, session: session)
+        let html = try await HTTP.fetchHTML(url, session: session, headers: ["Referer": Self.base + "/"])
         let chapters = Self.parseCatalog(html, bookID: bookID)
         guard !chapters.isEmpty else { throw SourceError.notFound }
         return chapters
@@ -59,7 +59,7 @@ final class HetushuSource: ContentSource {
         guard let url = URL(string: "\(Self.base)/book/\(bookID)/\(chapterID).html") else {
             throw SourceError.network("章节标识无效")
         }
-        let html = try await HTTP.fetchHTML(url, session: session)
+        let html = try await HTTP.fetchHTML(url, session: session, headers: ["Referer": Self.base + "/"])
         let text = Self.parseChapter(html)
         guard !text.isEmpty else { throw SourceError.unsupported("该章正文为空") }
         return text

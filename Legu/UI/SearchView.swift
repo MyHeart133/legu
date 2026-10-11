@@ -1,10 +1,12 @@
 import SwiftUI
 
+/// 搜索:多源聚合 → 同书合并、按精准度排序(真实书在前)
 struct SearchView: View {
     @EnvironmentObject var sourceStore: SourceStore
 
     @State private var query = ""
     @State private var batches: [SourceSearchBatch] = []
+    @State private var merged: [MergedBook] = []
     @State private var searching = false
     @State private var doneCount = 0
     @State private var totalCount = 0
@@ -13,58 +15,35 @@ struct SearchView: View {
     var body: some View {
         NavigationStack {
             List {
-                if searching || !batches.isEmpty {
+                if searching || !merged.isEmpty {
                     Section {
-                        HStack {
-                            if searching {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                            Text(searching ? "搜索中 \(doneCount)/\(totalCount) 个书源…" : "完成:共 \(totalCount) 个书源")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            let found = batches.reduce(0) { $0 + $1.books.count }
-                            Text("\(found) 本")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
+                        progressRow
                     }
                 }
 
-                ForEach(batches) { batch in
-                    if !batch.books.isEmpty || batch.error != nil {
-                        Section {
-                            ForEach(batch.books) { book in
-                                NavigationLink(value: book) {
-                                    BookResultRow(book: book)
-                                }
-                            }
-                            if let error = batch.error {
-                                Text("✗ \(error)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        } header: {
-                            HStack {
-                                Text(batch.sourceName)
-                                Spacer()
-                                Text(batch.books.isEmpty ? "无结果" : "\(batch.books.count) 本")
-                            }
-                        }
+                ForEach(merged) { item in
+                    NavigationLink {
+                        BookDetailView(
+                            book: item.primary.book,
+                            sourceName: item.primary.sourceName,
+                            alternatives: item.alternatives
+                        )
+                    } label: {
+                        MergedBookRow(item: item)
                     }
                 }
 
-                if !searching && batches.isEmpty {
+                if !searching && merged.isEmpty {
                     Section {
                         VStack(spacing: 10) {
                             Image(systemName: "magnifyingglass")
                                 .font(.largeTitle)
                                 .foregroundColor(.secondary)
-                            Text("输入书名或作者,多书源同时搜索")
+                            Text("输入书名或作者,\(sourceStore.enabledCount) 个书源同时搜索")
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
-                            Text("当前启用 \(sourceStore.enabledCount) 个书源")
+                                .multilineTextAlignment(.center)
+                            Text("结果按书名匹配度排序,点进可切换来源")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -75,9 +54,6 @@ struct SearchView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("搜索")
-            .navigationDestination(for: SourceBook.self) { book in
-                BookDetailView(book: book, sourceName: nameFor(book.sourceID))
-            }
             .searchable(text: $query, prompt: "书名 / 作者")
             .onSubmit(of: .search) { startSearch() }
             .toolbar {
@@ -90,8 +66,22 @@ struct SearchView: View {
         }
     }
 
-    private func nameFor(_ sourceID: String) -> String {
-        sourceStore.record(forBookSourceID: sourceID)?.name ?? sourceID
+    private var progressRow: some View {
+        HStack {
+            if searching {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Text(searching ? "搜索中 \(doneCount)/\(totalCount) · 已找到 \(merged.count) 本" : "完成:\(totalCount) 个书源 · \(merged.count) 本")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+            if searching && totalCount > 120 {
+                Text("源多可稍等")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
     }
 
     private func startSearch() {
@@ -99,17 +89,25 @@ struct SearchView: View {
         guard !q.isEmpty else { return }
         searchTask?.cancel()
         batches = []
+        merged = []
         doneCount = 0
         let sources = sourceStore.enabledSources
         totalCount = sources.count
         guard !sources.isEmpty else { return }
         searching = true
         searchTask = Task { @MainActor in
+            var lastMerge = Date.distantPast
             for await batch in SearchService.stream(query: q, sources: sources) {
                 if Task.isCancelled { break }
                 batches.append(batch)
                 doneCount += 1
+                let now = Date()
+                if !batch.books.isEmpty && now.timeIntervalSince(lastMerge) > 0.4 {
+                    lastMerge = now
+                    merged = SearchRanking.merge(batches, query: q)
+                }
             }
+            merged = SearchRanking.merge(batches, query: q)
             searching = false
         }
     }
@@ -118,28 +116,40 @@ struct SearchView: View {
         searchTask?.cancel()
         searchTask = nil
         searching = false
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !q.isEmpty {
+            merged = SearchRanking.merge(batches, query: q)
+        }
     }
 }
 
-struct BookResultRow: View {
-    let book: SourceBook
+/// 合并结果行:书名 + 来源
+struct MergedBookRow: View {
+    let item: MergedBook
 
     var body: some View {
         HStack(spacing: 12) {
-            CoverView(url: book.cover, title: book.title, width: 40, height: 54)
+            CoverView(url: item.cover, title: item.title, width: 40, height: 54)
             VStack(alignment: .leading, spacing: 3) {
-                Text(book.title)
+                Text(item.title)
                     .font(.subheadline)
                     .lineLimit(1)
-                Text(book.author.isEmpty ? "佚名" : book.author)
+                Text(item.author.isEmpty ? "佚名" : item.author)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
-                if let summary = book.summary, !summary.isEmpty {
-                    Text(summary)
+                HStack(spacing: 6) {
+                    Text(item.primary.sourceName)
                         .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.gray.opacity(0.14))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                    if item.sourceCount > 1 {
+                        Text("+\(item.sourceCount - 1) 个来源")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
         }

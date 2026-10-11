@@ -20,8 +20,8 @@ targets:
       path: Legu/Info.plist
       properties:
         CFBundleDisplayName: 乐读
-        CFBundleShortVersionString: "1.0.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.1.0"
+        CFBundleVersion: "2"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

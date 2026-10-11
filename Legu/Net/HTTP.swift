@@ -193,6 +193,22 @@ enum HTTP {
         percentEncode(s, encoding: .gb18030)
     }
 
+    /// 失败重试包装(网络抖动兜底)
+    static func retrying<T>(times: Int = 1, delay: Double = 0.7, _ op: () async throws -> T) async throws -> T {
+        var lastError: Error?
+        for attempt in 0...max(0, times) {
+            do {
+                return try await op()
+            } catch {
+                lastError = error
+                if attempt < times {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+            }
+        }
+        throw lastError ?? SourceError.network("重试失败")
+    }
+
     /// 同步抓取(供书源 JS 的 java.ajax 使用)
     static func fetchDataSync(_ urlString: String, timeout: TimeInterval = 20) -> String {
         guard let url = URL(string: urlString) else { return "" }
