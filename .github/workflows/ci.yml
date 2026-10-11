@@ -89,6 +89,7 @@ jobs:
       - name: Verify bundled resources
         run: |
           test -f dist-ipa/Legu.app/BundledSources.json && echo "BundledSources.json OK"
+          test -f dist-ipa/Legu.app/Assets.car && echo "Assets.car OK"
           ls -la dist-ipa/Legu.app/
 
       - name: Package unsigned IPA

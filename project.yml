@@ -20,8 +20,9 @@ targets:
       path: Legu/Info.plist
       properties:
         CFBundleDisplayName: 乐读
-        CFBundleShortVersionString: "1.1.1"
-        CFBundleVersion: "3"
+        CFBundleIconName: AppIcon
+        CFBundleShortVersionString: "1.1.2"
+        CFBundleVersion: "4"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -36,6 +37,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.legu.app
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   LeguTests:
     type: bundle.unit-test
     platform: iOS
