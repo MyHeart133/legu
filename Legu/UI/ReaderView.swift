@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// 阅读器:全屏沉浸式 —— 默认无导航栏/标签栏,点正文呼出控制层;
-/// 排版面板内嵌在底部(不跳页);章节正文缓存 + 预取下一章
+/// 阅读器:全屏沉浸式,点正文呼出控制层;
+/// 正文由 TextKit 渲染(精确行距/段距/首行缩进/字距),排版面板内嵌
 struct ReaderView: View {
     let book: SourceBook
     let sourceName: String
@@ -31,14 +31,26 @@ struct ReaderView: View {
     }
 
     private var typo: ReaderTypography { settings.typography }
+    private var palette: ReaderTypography.Palette { typo.palette }
+    private var resolvedFont: ResolvedFont {
+        FontRegistry.shared.resolve(typo.fontID, bold: typo.bold)
+    }
 
     private var currentChapter: SourceChapter? {
         (index >= 0 && index < chapters.count) ? chapters[index] : nil
     }
 
+    /// 内容 + 排版签名(变化时重建文本视图)
+    private var textRevision: Int {
+        var hasher = Hasher()
+        hasher.combine(content)
+        hasher.combine(typo)
+        return hasher.finalize()
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
-            Color(hex: typo.theme.background).ignoresSafeArea()
+            Color(hex: palette.background).ignoresSafeArea()
 
             scrollBody
 
@@ -58,7 +70,7 @@ struct ReaderView: View {
         .onTapGesture { toggleControls() }
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .statusBarHidden(!showControls)
+        .statusBarHidden(!showControls && typo.hideStatusBar)
         .sheet(isPresented: $showCatalog) { catalogSheet }
         .task(id: index) { await loadContent() }
         .onAppear {
@@ -73,8 +85,8 @@ struct ReaderView: View {
             VStack(alignment: .leading, spacing: 0) {
                 if let ch = currentChapter {
                     Text(ch.title)
-                        .font(.system(size: typo.fontSize * 0.8))
-                        .foregroundColor(Color(hex: typo.theme.secondary))
+                        .font(swiftUIFont(size: typo.fontSize * 0.85))
+                        .foregroundColor(Color(hex: palette.secondary))
                         .padding(.bottom, 18)
                 }
                 if loading {
@@ -88,7 +100,7 @@ struct ReaderView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(e)
                             .font(.subheadline)
-                            .foregroundColor(Color(hex: typo.theme.secondary))
+                            .foregroundColor(Color(hex: palette.secondary))
                         Button("重试") {
                             Task { await loadContent() }
                         }
@@ -96,30 +108,28 @@ struct ReaderView: View {
                     }
                     .padding(.top, 40)
                 } else {
-                    contentView
+                    ReaderTextView(
+                        attributed: ReaderTextRenderer.attributedString(content, typo: typo, font: resolvedFont),
+                        revision: textRevision,
+                        onTap: { toggleControls() }
+                    )
                     nextChapterButton
                         .padding(.top, 30)
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 14)
+            .padding(.horizontal, typo.horizontalPadding)
+            .padding(.top, typo.verticalPadding)
             .padding(.bottom, 120)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .id(index)
     }
 
-    private var contentView: some View {
-        let paragraphs = content.components(separatedBy: "\n").filter { !$0.isEmpty }
-        return VStack(alignment: .leading, spacing: typo.paragraphSpacing) {
-            ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, para in
-                Text(para)
-                    .font(.system(size: typo.fontSize))
-                    .lineSpacing(typo.fontSize * (typo.lineSpacing - 1))
-                    .foregroundColor(Color(hex: typo.theme.foreground))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+    private func swiftUIFont(size: CGFloat) -> Font {
+        if let name = resolvedFont.postScriptName {
+            return .custom(name, size: size)
         }
+        return .system(size: size, weight: typo.bold ? .semibold : .regular)
     }
 
     private var nextChapterButton: some View {
@@ -164,7 +174,7 @@ struct ReaderView: View {
                     .frame(width: 36, height: 36)
             }
         }
-        .foregroundColor(Color(hex: typo.theme.foreground))
+        .foregroundColor(Color(hex: palette.foreground))
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(.ultraThinMaterial)
@@ -173,7 +183,7 @@ struct ReaderView: View {
     private var bottomPanel: some View {
         VStack(spacing: 0) {
             if showTypoPanel {
-                readerTypographyPanel
+                ReaderTypographyPanel()
             }
             Divider()
             HStack {
@@ -203,72 +213,9 @@ struct ReaderView: View {
                     .font(.caption2)
             }
             .frame(maxWidth: .infinity)
-            .foregroundColor(Color(hex: typo.theme.foreground))
+            .foregroundColor(Color(hex: palette.foreground))
         }
         .buttonStyle(.plain)
-    }
-
-    /// 内嵌排版面板(字号/行距/段距/主题)
-    private var readerTypographyPanel: some View {
-        VStack(spacing: 13) {
-            HStack(spacing: 10) {
-                Text("字号")
-                    .font(.caption)
-                    .frame(width: 30, alignment: .leading)
-                Slider(value: $settings.typography.fontSize,
-                       in: ReaderTypography.minFont...ReaderTypography.maxFont, step: 1)
-                Text("\(Int(settings.typography.fontSize))")
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 24, alignment: .trailing)
-            }
-            HStack(spacing: 10) {
-                Text("行距")
-                    .font(.caption)
-                    .frame(width: 30, alignment: .leading)
-                Slider(value: $settings.typography.lineSpacing,
-                       in: ReaderTypography.minLine...ReaderTypography.maxLine, step: 0.1)
-                Text(String(format: "%.1f", settings.typography.lineSpacing))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 24, alignment: .trailing)
-            }
-            HStack(spacing: 10) {
-                Text("段距")
-                    .font(.caption)
-                    .frame(width: 30, alignment: .leading)
-                Slider(value: $settings.typography.paragraphSpacing,
-                       in: ReaderTypography.minPara...ReaderTypography.maxPara, step: 2)
-                Text("\(Int(settings.typography.paragraphSpacing))")
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 24, alignment: .trailing)
-            }
-            HStack(spacing: 8) {
-                ForEach(ReaderTypography.Theme.allCases, id: \.self) { theme in
-                    Button {
-                        settings.typography.theme = theme
-                    } label: {
-                        Text(theme.name)
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color(hex: theme.background))
-                            .foregroundColor(Color(hex: theme.foreground))
-                            .clipShape(Capsule())
-                            .overlay(
-                                Capsule().stroke(
-                                    settings.typography.theme == theme
-                                        ? Color.accentColor
-                                        : Color.gray.opacity(0.35),
-                                    lineWidth: settings.typography.theme == theme ? 2 : 1
-                                )
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .foregroundColor(Color(hex: typo.theme.foreground))
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
     }
 
     // MARK: - 目录
@@ -343,7 +290,6 @@ struct ReaderView: View {
             bookID: book.sourceBookID,
             chapterID: chapter.id
         )
-        // 缓存命中:秒开
         if let cached = BookCache.shared.chapter(for: cacheKey) {
             content = cached
             errorText = nil
@@ -374,7 +320,6 @@ struct ReaderView: View {
         loading = false
     }
 
-    /// 后台预取下一章
     private func prefetchNext() {
         let next = index + 1
         guard next < chapters.count else { return }

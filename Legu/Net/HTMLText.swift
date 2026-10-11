@@ -67,11 +67,11 @@ enum HTMLText {
         return normalizeLines(s)
     }
 
-    /// 行级规范化:压缩行内空白、丢弃空行
+    /// 行级规范化:压缩行内空白、丢弃空行(含 \r 与全角空格伪空行)
     static func normalizeLines(_ s: String) -> String {
         let lines = s.components(separatedBy: "\n").map {
-            $0.replacingOccurrences(of: "[ \t\u{00A0}\u{3000}]+", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespaces)
+            $0.replacingOccurrences(of: "[ \t\r\u{00A0}\u{3000}]+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return lines.filter { !$0.isEmpty }.joined(separator: "\n")
     }
