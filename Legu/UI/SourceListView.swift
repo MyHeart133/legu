@@ -4,11 +4,23 @@ import SwiftUI
 struct SourceListView: View {
     @EnvironmentObject var sourceStore: SourceStore
     @State private var showImport = false
+    @State private var filter = ""
+
+    private var filteredGroups: [(group: String, records: [SourceRecord])] {
+        let f = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !f.isEmpty else { return sourceStore.grouped }
+        return sourceStore.grouped.compactMap { section in
+            let recs = section.records.filter {
+                $0.name.lowercased().contains(f) || $0.url.lowercased().contains(f)
+            }
+            return recs.isEmpty ? nil : (group: section.group, records: recs)
+        }
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(sourceStore.grouped, id: \.group) { section in
+                ForEach(filteredGroups, id: \.group) { section in
                     Section {
                         ForEach(section.records) { record in
                             SourceRow(record: record)
@@ -28,6 +40,7 @@ struct SourceListView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .searchable(text: $filter, prompt: "搜索书源名 / 网址")
             .navigationTitle("书源(\(sourceStore.enabledCount)/\(sourceStore.records.count))")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -35,7 +48,12 @@ struct SourceListView: View {
                         Button {
                             sourceStore.restoreNatives()
                         } label: {
-                            Label("恢复内置源", systemImage: "arrow.counterclockwise")
+                            Label("恢复内置源(10)", systemImage: "arrow.counterclockwise")
+                        }
+                        Button {
+                            sourceStore.restoreBundledSources()
+                        } label: {
+                            Label("恢复打包书源(302)", systemImage: "tray.and.arrow.down")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")

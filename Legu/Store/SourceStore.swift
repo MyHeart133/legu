@@ -69,14 +69,22 @@ final class SourceStore: ObservableObject {
         "shuku52": "https://www.52shuku.net",
     ]
 
+    /// 重新导入打包书源(删除后也能恢复;已存在的自动跳过,离线可用)
+    @discardableResult
+    func restoreBundledSources() -> ImportSummary {
+        guard let url = Bundle.main.url(forResource: "BundledSources", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else {
+            return ImportSummary(added: 0, skipped: 0, failed: 1)
+        }
+        let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        return importSources(jsonText: text)
+    }
+
     /// 首次运行导入打包书源(302 个,来自 xiu2 + yiove 合集)
     func importBundledIfNeeded() {
         let flagKey = "legu.bundled.v2.imported"
         if UserDefaults.standard.bool(forKey: flagKey) { return }
-        guard let url = Bundle.main.url(forResource: "BundledSources", withExtension: "json"),
-              let data = try? Data(contentsOf: url) else { return }
-        let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-        let summary = importSources(jsonText: text)
+        let summary = restoreBundledSources()
         if summary.added + summary.skipped > 0 {
             UserDefaults.standard.set(true, forKey: flagKey)
         }
