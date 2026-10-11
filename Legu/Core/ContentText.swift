@@ -20,10 +20,10 @@ enum ContentText {
         let lines = s.components(separatedBy: "\n").map { line -> String in
             var l = line
             // 行首行尾空白(含全角空格)
-            l = l.replacingOccurrences(of: "^[ \\u{3000}]+", with: "", options: .regularExpression)
-            l = l.replacingOccurrences(of: "[ \\u{3000}]+$", with: "", options: .regularExpression)
+            l = l.replacingOccurrences(of: "^[ \u{3000}]+", with: "", options: .regularExpression)
+            l = l.replacingOccurrences(of: "[ \u{3000}]+$", with: "", options: .regularExpression)
             // 行内连续空白压缩为单个半角空格(不触碰中文标点)
-            l = l.replacingOccurrences(of: "[ \\u{3000}]{2,}", with: " ", options: .regularExpression)
+            l = l.replacingOccurrences(of: "[ \u{3000}]{2,}", with: " ", options: .regularExpression)
             return l
         }
         // 丢弃空行 / 伪空白行
