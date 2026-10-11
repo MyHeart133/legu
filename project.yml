@@ -1,0 +1,61 @@
+name: Legu
+options:
+  bundleIdPrefix: com.legu
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+targets:
+  Legu:
+    type: application
+    platform: iOS
+    sources:
+      - path: Legu
+        excludes:
+          - "Info.plist"
+    info:
+      path: Legu/Info.plist
+      properties:
+        CFBundleDisplayName: 乐读
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiredDeviceCapabilities:
+          - arm64
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.legu.app
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: false
+  LeguTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: LeguTests
+    dependencies:
+      - target: Legu
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.legu.tests
+        GENERATE_INFOPLIST_FILE: true
+schemes:
+  Legu:
+    build:
+      targets:
+        Legu: all
+        LeguTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - LeguTests

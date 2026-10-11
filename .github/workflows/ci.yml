@@ -1,0 +1,101 @@
+name: Legu CI
+
+on:
+  push:
+    paths:
+      - "Legu/**"
+      - "LeguTests/**"
+      - "project.yml"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build & Test (Debug)
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Pick available iPhone simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, re, sys
+          data = json.load(sys.stdin)['devices']
+          def ver(rt):
+              m = re.search(r'iOS-(\d+)(?:-(\d+))?', rt)
+              return (int(m.group(1)), int(m.group(2) or 0)) if m else (0, 0)
+          cands = []
+          for runtime, devs in data.items():
+              if 'iOS' not in runtime:
+                  continue
+              for d in devs:
+                  if d.get('isAvailable') and d['name'].startswith('iPhone'):
+                      cands.append((runtime, d))
+          cands.sort(key=lambda x: ver(x[0]))
+          print(cands[-1][1]['udid'] if cands else '')
+          ")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "Selected simulator UDID: $UDID"
+          test -n "$UDID"
+
+      - name: Build (Debug)
+        run: |
+          set -o pipefail
+          xcodebuild -project Legu.xcodeproj -scheme Legu \
+            -configuration Debug \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Test
+        run: |
+          set -o pipefail
+          xcodebuild -project Legu.xcodeproj -scheme Legu \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath TestResults.xcresult \
+            test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legu-test-results
+          path: TestResults.xcresult
+          if-no-files-found: ignore
+
+      - name: Build Release (device, unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project Legu.xcodeproj -scheme Legu \
+            -configuration Release -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CONFIGURATION_BUILD_DIR="$PWD/dist-ipa" \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -r dist-ipa/Legu.app Payload/
+          zip -qry Legu-unsigned.ipa Payload
+          ls -la Legu-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: legu-unsigned-ipa
+          path: Legu-unsigned.ipa
+          if-no-files-found: error
