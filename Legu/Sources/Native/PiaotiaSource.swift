@@ -21,8 +21,7 @@ final class PiaotiaSource: ContentSource {
     func search(_ query: String) async throws -> [SourceBook] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              let encoded = HTTP.percentEncodedGBK(trimmed),
-              let url = URL(string: "\(Self.base)/modules/article/search.php?searchkey=\(encoded)&searchtype=articlename") else {
+              let url = URL(string: "\(Self.base)/modules/article/search.php?searchkey=\(HTTP.percentEncodedGBK(trimmed))&searchtype=articlename") else {
             return []
         }
         let html = try await HTTP.fetchHTML(
