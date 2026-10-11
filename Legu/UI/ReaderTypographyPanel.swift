@@ -19,6 +19,7 @@ struct ReaderTypographyPanel: View {
                 Text("字体").tag(0)
                 Text("排版").tag(1)
                 Text("主题").tag(2)
+                Text("翻页").tag(3)
             }
             .pickerStyle(.segmented)
 
@@ -28,8 +29,10 @@ struct ReaderTypographyPanel: View {
                     ScrollView { fontTab }.scrollIndicators(.hidden)
                 case 1:
                     ScrollView { layoutTab }.scrollIndicators(.hidden)
-                default:
+                case 2:
                     ScrollView { themeTab }.scrollIndicators(.hidden)
+                default:
+                    ScrollView { pageTab }.scrollIndicators(.hidden)
                 }
             }
             .frame(height: 172)
@@ -166,6 +169,15 @@ struct ReaderTypographyPanel: View {
                 Spacer()
             }
             HStack(spacing: 8) {
+                Toggle(isOn: $settings.typography.punctuationCompression) {
+                    Text("标点挤压(。」等组合收紧)")
+                        .font(.caption)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                Spacer()
+            }
+            HStack(spacing: 8) {
                 Text("边距")
                     .font(.caption)
                     .frame(width: 30, alignment: .leading)
@@ -224,6 +236,32 @@ struct ReaderTypographyPanel: View {
                 .controlSize(.mini)
                 Spacer()
             }
+        }
+    }
+
+    // MARK: - 翻页
+
+    private var pageTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("模式")
+                    .font(.caption)
+                chip("上下滚动", selected: typo.readerMode == "scroll") {
+                    settings.typography.readerMode = "scroll"
+                }
+                chip("平移翻页", selected: typo.readerMode == "page") {
+                    settings.typography.readerMode = "page"
+                }
+                chip("仿真翻页", selected: typo.readerMode == "curl") {
+                    settings.typography.readerMode = "curl"
+                }
+            }
+            Text("翻页模式:点屏幕左/右两侧翻页,点中间呼出控制层;左右滑动整页切换。")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text("分页按当前字体/字号/行距/边距实时计算;修改排版后自动回到原段落位置。")
+                .font(.caption2)
+                .foregroundColor(.secondary)
         }
     }
 

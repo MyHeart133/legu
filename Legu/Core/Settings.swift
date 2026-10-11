@@ -33,6 +33,15 @@ struct ReaderTypography: Codable, Equatable, Hashable {
     var customBackground: String = "#F7F0DF"
     var customForeground: String = "#3A3226"
     var hideStatusBar: Bool = true     // 沉浸模式(隐藏状态栏)
+    /// 翻页模式:"scroll"(上下滚动) / "page"(平移翻页) / "curl"(仿真翻页)
+    var readerMode: String = "scroll"
+    /// 中文标点挤压(句末标点后紧跟收尾标点时收紧间隙)
+    var punctuationCompression: Bool = true
+
+    /// 影响分页结果的布局签名(主题等纯颜色变化不参与)
+    var layoutKey: String {
+        "\(fontID)|\(fontSize)|\(bold)|\(lineSpacing)|\(letterSpacing)|\(paragraphSpacing)|\(firstLineIndent)|\(punctuationCompression)"
+    }
 
     // MARK: 范围
 
@@ -100,6 +109,7 @@ struct ReaderTypography: Codable, Equatable, Hashable {
         case fontID, fontSize, bold, lineSpacing, letterSpacing, paragraphSpacing
         case firstLineIndent, horizontalPadding, verticalPadding
         case theme, customBackground, customForeground, hideStatusBar
+        case readerMode, punctuationCompression
     }
 
     init() {}
@@ -119,6 +129,8 @@ struct ReaderTypography: Codable, Equatable, Hashable {
         customBackground = try c.decodeIfPresent(String.self, forKey: .customBackground) ?? "#F7F0DF"
         customForeground = try c.decodeIfPresent(String.self, forKey: .customForeground) ?? "#3A3226"
         hideStatusBar = try c.decodeIfPresent(Bool.self, forKey: .hideStatusBar) ?? true
+        readerMode = try c.decodeIfPresent(String.self, forKey: .readerMode) ?? "scroll"
+        punctuationCompression = try c.decodeIfPresent(Bool.self, forKey: .punctuationCompression) ?? true
     }
 }
 

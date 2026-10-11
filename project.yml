@@ -21,8 +21,8 @@ targets:
       properties:
         CFBundleDisplayName: 乐读
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "1.2.0"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "1.3.0"
+        CFBundleVersion: "6"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

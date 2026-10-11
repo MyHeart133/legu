@@ -7,6 +7,7 @@ struct ReaderView: View {
     let sourceName: String
     let chapters: [SourceChapter]
     let initialIndex: Int
+    let initialOffset: Int?
 
     @EnvironmentObject var shelf: ShelfStore
     @EnvironmentObject var sourceStore: SourceStore
@@ -20,12 +21,14 @@ struct ReaderView: View {
     @State private var showCatalog = false
     @State private var showControls = true
     @State private var showTypoPanel = false
+    @StateObject private var pageModel = PageReaderModel()
 
-    init(book: SourceBook, sourceName: String, chapters: [SourceChapter], initialIndex: Int) {
+    init(book: SourceBook, sourceName: String, chapters: [SourceChapter], initialIndex: Int, initialOffset: Int? = nil) {
         self.book = book
         self.sourceName = sourceName
         self.chapters = chapters
         self.initialIndex = initialIndex
+        self.initialOffset = initialOffset
         let clamped = max(0, min(initialIndex, max(0, chapters.count - 1)))
         _index = State(initialValue: clamped)
     }
@@ -52,7 +55,11 @@ struct ReaderView: View {
         ZStack(alignment: .top) {
             Color(hex: palette.background).ignoresSafeArea()
 
-            scrollBody
+            if typo.readerMode == "scroll" {
+                scrollBody
+            } else {
+                pageBody
+            }
 
             VStack(spacing: 0) {
                 if showControls {
@@ -72,7 +79,7 @@ struct ReaderView: View {
         .toolbar(.hidden, for: .tabBar)
         .statusBarHidden(!showControls && typo.hideStatusBar)
         .sheet(isPresented: $showCatalog) { catalogSheet }
-        .task(id: index) { await loadContent() }
+        .task(id: "\(index)-\(typo.readerMode)") { await loadContent() }
         .onAppear {
             _ = shelf.add(book, sourceName: sourceName)
         }
@@ -132,9 +139,93 @@ struct ReaderView: View {
         return .system(size: size, weight: typo.bold ? .semibold : .regular)
     }
 
+    // MARK: - 翻页模式
+
+    private var pageBody: some View {
+        GeometryReader { geo in
+            let textSize = CGSize(
+                width: max(120, geo.size.width - typo.horizontalPadding * 2),
+                height: max(120, geo.size.height - typo.verticalPadding * 2 - ReaderPageView.footerHeight - 2)
+            )
+            ZStack {
+                ReaderPageView(
+                    model: pageModel,
+                    transitionStyle: typo.readerMode == "curl" ? .pageCurl : .scroll,
+                    palette: palette,
+                    onCenterTap: { toggleControls() },
+                    onBoundaryPrev: {
+                        if index > 0 { goToChapter(index - 1) }
+                    },
+                    onBoundaryNext: {
+                        if index < chapters.count - 1 { goToChapter(index + 1) }
+                    }
+                )
+                .id(typo.readerMode)
+
+                pageStatusOverlay
+            }
+            .padding(.horizontal, typo.horizontalPadding)
+            .padding(.vertical, typo.verticalPadding)
+            .task(id: "\(book.id)|\(chapters.count)|\(typo.hashValue)|\(Int(textSize.width))x\(Int(textSize.height))") {
+                pageModel.configure(
+                    book: book,
+                    chapters: chapters,
+                    sourceStore: sourceStore,
+                    typo: typo,
+                    textSize: textSize,
+                    startChapter: index,
+                    startOffset: initialOffset ?? 0
+                )
+            }
+        }
+        .onAppear {
+            pageModel.onChapterChanged = { newChapter in
+                if newChapter != index {
+                    index = newChapter
+                }
+            }
+            pageModel.onProgress = { chapter, offset in
+                guard chapter >= 0, chapter < chapters.count else { return }
+                shelf.updateProgress(
+                    sourceID: book.sourceID,
+                    sourceBookID: book.sourceBookID,
+                    chapterIndex: chapter,
+                    chapterTitle: chapters[chapter].title,
+                    offset: offset
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pageStatusOverlay: some View {
+        switch pageModel.status {
+        case .loading where pageModel.pages.isEmpty:
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .failed(let message):
+            VStack(spacing: 12) {
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundColor(Color(hex: palette.secondary))
+                    .multilineTextAlignment(.center)
+                Button("重试") {
+                    pageModel.retry()
+                }
+                .buttonStyle(.borderedProminent)
+                Text("也可以切换到上下滚动模式阅读")
+                    .font(.caption2)
+                    .foregroundColor(Color(hex: palette.secondary))
+            }
+            .padding(24)
+        default:
+            EmptyView()
+        }
+    }
+
     private var nextChapterButton: some View {
         Button {
-            nextChapter()
+            goToChapter(index + 1)
         } label: {
             Text(index >= chapters.count - 1 ? "已是最后一章" : "下一章 →")
                 .font(.subheadline)
@@ -187,7 +278,7 @@ struct ReaderView: View {
             }
             Divider()
             HStack {
-                barButton("上一章", "chevron.left") { prevChapter() }
+                barButton("上一章", "chevron.left") { goToChapter(index - 1) }
                     .disabled(index <= 0)
                 barButton("目录", "list.bullet") { showCatalog = true }
                 barButton("排版", "textformat.size") {
@@ -195,7 +286,7 @@ struct ReaderView: View {
                         showTypoPanel.toggle()
                     }
                 }
-                barButton("下一章", "chevron.right") { nextChapter() }
+                barButton("下一章", "chevron.right") { goToChapter(index + 1) }
                     .disabled(index >= chapters.count - 1)
             }
             .padding(.vertical, 9)
@@ -225,7 +316,7 @@ struct ReaderView: View {
             List {
                 ForEach(chapters) { ch in
                     Button {
-                        index = max(0, ch.index - 1)
+                        goToChapter(ch.index - 1)
                         showCatalog = false
                     } label: {
                         HStack {
@@ -265,12 +356,12 @@ struct ReaderView: View {
         }
     }
 
-    private func prevChapter() {
-        if index > 0 { index -= 1 }
-    }
-
-    private func nextChapter() {
-        if index < chapters.count - 1 { index += 1 }
+    private func goToChapter(_ newIndex: Int) {
+        let clamped = max(0, min(newIndex, chapters.count - 1))
+        index = clamped
+        if typo.readerMode != "scroll" {
+            pageModel.jumpTo(chapter: clamped, offset: 0)
+        }
     }
 
     private func saveProgress(_ chapter: SourceChapter) {
@@ -283,6 +374,7 @@ struct ReaderView: View {
     }
 
     private func loadContent() async {
+        guard typo.readerMode == "scroll" else { return }
         guard index >= 0, index < chapters.count else { return }
         let chapter = chapters[index]
         let cacheKey = BookCache.chapterKey(
@@ -301,16 +393,8 @@ struct ReaderView: View {
         loading = true
         errorText = nil
         content = ""
-        guard let source = sourceStore.source(forBookSourceID: book.sourceID) else {
-            errorText = "找不到书源(可能已被删除)"
-            loading = false
-            return
-        }
         do {
-            let text = try await HTTP.retrying {
-                try await source.fetchChapterContent(book.sourceBookID, chapterID: chapter.id)
-            }
-            BookCache.shared.setChapter(text, for: cacheKey)
+            let text = try await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
             content = text
             saveProgress(chapter)
             prefetchNext()
@@ -330,12 +414,8 @@ struct ReaderView: View {
             chapterID: chapter.id
         )
         guard !BookCache.shared.hasChapter(key) else { return }
-        guard let source = sourceStore.source(forBookSourceID: book.sourceID) else { return }
-        let bookID = book.sourceBookID
         Task {
-            if let text = try? await source.fetchChapterContent(bookID, chapterID: chapter.id) {
-                BookCache.shared.setChapter(text, for: key)
-            }
+            _ = try? await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
         }
     }
 }

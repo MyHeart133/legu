@@ -11,6 +11,8 @@ struct ShelfBook: Codable, Identifiable, Equatable, Hashable {
     var sourceName: String
     var lastChapterIndex: Int
     var lastChapterTitle: String
+    /// 章内字符偏移(分页模式恢复位置用;旧数据为 nil)
+    var lastOffset: Int? = nil
     var updatedAt: Date
 
     var asSourceBook: SourceBook {
@@ -91,11 +93,14 @@ final class ShelfStore: ObservableObject {
         save()
     }
 
-    func updateProgress(sourceID: String, sourceBookID: String, chapterIndex: Int, chapterTitle: String) {
+    func updateProgress(sourceID: String, sourceBookID: String, chapterIndex: Int, chapterTitle: String, offset: Int? = nil) {
         let id = Self.makeID(sourceID: sourceID, sourceBookID: sourceBookID)
         guard let idx = books.firstIndex(where: { $0.id == id }) else { return }
         books[idx].lastChapterIndex = chapterIndex
         books[idx].lastChapterTitle = chapterTitle
+        if let offset {
+            books[idx].lastOffset = offset
+        }
         books[idx].updatedAt = Date()
         save()
     }

@@ -43,7 +43,39 @@ enum ReaderTextRenderer {
         if typo.letterSpacing > 0 {
             attrs[.kern] = CGFloat(typo.letterSpacing)
         }
-        return NSAttributedString(string: text, attributes: attrs)
+        let result = NSMutableAttributedString(string: text, attributes: attrs)
+        if typo.punctuationCompression {
+            applyPunctuationCompression(result, fontSize: CGFloat(typo.fontSize), letterSpacing: CGFloat(typo.letterSpacing))
+        }
+        return result
+    }
+
+    // MARK: - 标点挤压
+
+    /// 句末标点(前) + 收尾标点(后)相邻时收紧半个字宽
+    /// 仅限全角标点:半角标点字身窄,负字距会导致视觉重叠
+    private static let tightenAfter: Set<Character> = [
+        "。", "，", "、", "；", "：", "！", "？", "…",
+    ]
+    private static let tightenBefore: Set<Character> = [
+        "」", "』", "”", "’", "）", "】", "》", "〉", "〕", "］",
+    ]
+
+    static func applyPunctuationCompression(
+        _ string: NSMutableAttributedString,
+        fontSize: CGFloat,
+        letterSpacing: CGFloat
+    ) {
+        let chars = Array(string.string)
+        guard chars.count > 1 else { return }
+        var i = 0
+        while i + 1 < chars.count {
+            if tightenAfter.contains(chars[i]), tightenBefore.contains(chars[i + 1]) {
+                let value = letterSpacing - fontSize * 0.5
+                string.addAttribute(.kern, value: value, range: NSRange(location: i, length: 1))
+            }
+            i += 1
+        }
     }
 
     /// 章节标题样式(独立于正文:不加首行缩进、更弱色、可选加粗)

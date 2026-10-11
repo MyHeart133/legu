@@ -94,7 +94,8 @@ struct ShelfBookOpenerView: View {
                     book: book.asSourceBook,
                     sourceName: book.sourceName,
                     chapters: chapters,
-                    initialIndex: book.lastChapterIndex
+                    initialIndex: book.lastChapterIndex,
+                    initialOffset: book.lastOffset
                 )
             case .failed:
                 VStack(spacing: 14) {
