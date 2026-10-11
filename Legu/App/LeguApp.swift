@@ -19,6 +19,7 @@ struct LeguApp: App {
                     await MainActor.run {
                         sourceStore.importBundledIfNeeded()
                         TTSService.shared.configure(store: ttsStore)
+                        DownloadManager.shared.configure(sourceStore: sourceStore)
                     }
                 }
         }

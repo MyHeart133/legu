@@ -32,6 +32,15 @@ struct ShelfView: View {
             .navigationDestination(for: ShelfBook.self) { book in
                 ShelfBookOpenerView(book: book)
             }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        DownloadsView()
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                    }
+                }
+            }
         }
     }
 }
@@ -118,6 +127,12 @@ struct ShelfBookOpenerView: View {
     private func load(useCache: Bool) async {
         state = .loading
         guard let source = sourceStore.source(forBookSourceID: book.sourceID) else {
+            // 书源被删了,但下载过的话还能离线读
+            if let offline = OfflineStore.loadTOC(offlineKey), !offline.isEmpty {
+                chapters = offline
+                state = .ready
+                return
+            }
             errorText = "找不到对应书源(可能已被删除)\n请回到「搜索」重新找这本书"
             state = .failed
             return
@@ -125,6 +140,11 @@ struct ShelfBookOpenerView: View {
         let key = BookCache.tocKey(sourceID: book.sourceID, bookID: book.sourceBookID)
         if useCache, let cached = BookCache.shared.toc(for: key), !cached.isEmpty {
             chapters = cached
+            state = .ready
+            return
+        }
+        if useCache, let offline = OfflineStore.loadTOC(offlineKey), !offline.isEmpty {
+            chapters = offline
             state = .ready
             return
         }
@@ -141,9 +161,18 @@ struct ShelfBookOpenerView: View {
             chapters = list
             state = .ready
         } catch {
-            errorText = "目录加载失败:\(error.localizedDescription)"
-            state = .failed
+            if let offline = OfflineStore.loadTOC(offlineKey), !offline.isEmpty {
+                chapters = offline
+                state = .ready
+            } else {
+                errorText = "目录加载失败:\(error.localizedDescription)"
+                state = .failed
+            }
         }
+    }
+
+    private var offlineKey: String {
+        OfflineStore.bookKey(sourceID: book.sourceID, sourceBookID: book.sourceBookID)
     }
 }
 
@@ -153,6 +182,7 @@ struct BookDetailView: View {
 
     @EnvironmentObject var shelf: ShelfStore
     @EnvironmentObject var sourceStore: SourceStore
+    @ObservedObject private var downloads = DownloadManager.shared
 
     @State private var current: BookAlternative
     @State private var detail: SourceBook
@@ -225,6 +255,10 @@ struct BookDetailView: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
+            }
+
+            Section("离线下载") {
+                downloadRow
             }
 
             Section {
@@ -317,6 +351,62 @@ struct BookDetailView: View {
         .padding(.vertical, 4)
     }
 
+    // MARK: - 离线下载
+
+    private var offlineKey: String {
+        OfflineStore.bookKey(sourceID: current.book.sourceID, sourceBookID: current.book.sourceBookID)
+    }
+
+    @ViewBuilder
+    private var downloadRow: some View {
+        let key = offlineKey
+        if let rec = downloads.record(for: key) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(rec.statusText)
+                        .font(.subheadline)
+                    Spacer()
+                    downloadActionButton(rec, key: key)
+                }
+                if rec.status == .downloading || rec.status == .queued {
+                    ProgressView(value: rec.progress)
+                }
+                Text("\(rec.doneCount)/\(rec.totalChapters) 章 · \(rec.sizeText)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 2)
+        } else {
+            HStack {
+                Text("下载全本,离线也能读")
+                    .font(.subheadline)
+                Spacer()
+                Button("下载") {
+                    downloads.enqueue(book: current.book, sourceName: current.sourceName, chapters: chapters)
+                }
+                .buttonStyle(.bordered)
+                .disabled(chapters.isEmpty)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func downloadActionButton(_ rec: DownloadRecord, key: String) -> some View {
+        switch rec.status {
+        case .downloading, .queued:
+            Button("暂停") { downloads.pause(id: key) }
+                .buttonStyle(.bordered)
+        case .paused:
+            Button("继续") { downloads.resume(id: key) }
+                .buttonStyle(.borderedProminent)
+                .disabled(rec.doneCount >= rec.totalChapters)
+        case .completed:
+            Label("已下载", systemImage: "checkmark.circle.fill")
+                .font(.subheadline)
+                .foregroundColor(.green)
+        }
+    }
+
     private func switchTo(_ alt: BookAlternative) {
         guard alt.id != current.id else { return }
         current = alt
@@ -333,8 +423,17 @@ struct BookDetailView: View {
             return
         }
         let key = BookCache.tocKey(sourceID: current.sourceID, bookID: current.book.sourceBookID)
+        let offlineKey = OfflineStore.bookKey(sourceID: current.sourceID, sourceBookID: current.book.sourceBookID)
         if useCache, let cached = BookCache.shared.toc(for: key), !cached.isEmpty {
             chapters = cached
+            loading = false
+            if let d = try? await source.fetchDetail(current.book.sourceBookID) {
+                detail = d
+            }
+            return
+        }
+        if useCache, let offline = OfflineStore.loadTOC(offlineKey), !offline.isEmpty {
+            chapters = offline
             loading = false
             if let d = try? await source.fetchDetail(current.book.sourceBookID) {
                 detail = d
@@ -351,7 +450,11 @@ struct BookDetailView: View {
             BookCache.shared.setToc(list, for: key)
             chapters = list
         } catch {
-            errorText = "目录加载失败:\(error.localizedDescription)"
+            if let offline = OfflineStore.loadTOC(offlineKey), !offline.isEmpty {
+                chapters = offline
+            } else {
+                errorText = "目录加载失败:\(error.localizedDescription)"
+            }
         }
         loading = false
     }

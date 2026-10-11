@@ -76,6 +76,11 @@ final class PaginationCache {
         store[key] = ranges
     }
 
+    func clearAll() {
+        store.removeAll()
+        order.removeAll()
+    }
+
     /// 缓存键:来源+书籍+章节+排版布局签名+正文尺寸(纯函数,任意线程可用)
     nonisolated static func key(
         sourceID: String,

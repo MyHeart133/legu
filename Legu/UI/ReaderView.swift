@@ -23,6 +23,8 @@ struct ReaderView: View {
     @State private var showTypoPanel = false
     @State private var showListening = false
     @StateObject private var pageModel = PageReaderModel()
+    @ObservedObject private var downloads = DownloadManager.shared
+    @State private var downloadedFiles: Set<String> = []
 
     init(book: SourceBook, sourceName: String, chapters: [SourceChapter], initialIndex: Int, initialOffset: Int? = nil) {
         self.book = book
@@ -346,6 +348,11 @@ struct ReaderView: View {
                                     .lineLimit(1)
                                     .foregroundColor(.primary)
                                 Spacer()
+                                if downloadedFiles.contains(OfflineStore.chapterFileName(ch.id)) {
+                                    Image(systemName: "arrow.down.circle.fill")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
                                 if ch.index - 1 == index {
                                     Image(systemName: "checkmark")
                                         .font(.caption)
@@ -357,6 +364,9 @@ struct ReaderView: View {
                     }
                 }
                 .listStyle(.plain)
+                .task(id: catalogDownloadState) {
+                    downloadedFiles = OfflineStore.downloadedFileNames(offlineKey)
+                }
                 .onAppear {
                     scrollCatalogToCurrent(proxy)
                 }
@@ -367,6 +377,43 @@ struct ReaderView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { showCatalog = false }
                 }
+                ToolbarItem(placement: .confirmationAction) {
+                    catalogDownloadButton
+                }
+            }
+        }
+    }
+
+    // MARK: - 离线下载
+
+    private var offlineKey: String {
+        OfflineStore.bookKey(sourceID: book.sourceID, sourceBookID: book.sourceBookID)
+    }
+
+    private var catalogDownloadState: Int {
+        downloads.record(for: offlineKey)?.doneCount ?? -1
+    }
+
+    @ViewBuilder
+    private var catalogDownloadButton: some View {
+        if let rec = downloads.record(for: offlineKey) {
+            switch rec.status {
+            case .downloading, .queued:
+                Button("下载中 \(Int(rec.progress * 100))%") {
+                    downloads.pause(id: offlineKey)
+                }
+            case .paused:
+                Button(rec.doneCount >= rec.totalChapters ? "已下载" : "继续下载") {
+                    downloads.resume(id: offlineKey)
+                }
+                .disabled(rec.doneCount >= rec.totalChapters)
+            case .completed:
+                Text("已下载")
+                    .foregroundColor(.secondary)
+            }
+        } else {
+            Button("下载全本") {
+                downloads.enqueue(book: book, sourceName: sourceName, chapters: chapters)
             }
         }
     }

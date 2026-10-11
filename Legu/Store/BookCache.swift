@@ -51,6 +51,18 @@ final class BookCache {
         chapterStore[key] != nil
     }
 
+    // MARK: - 统计 / 清理
+
+    var chapterCount: Int { chapterStore.count }
+    var tocCount: Int { tocStore.count }
+
+    func clearAll() {
+        tocStore.removeAll()
+        tocOrder.removeAll()
+        chapterStore.removeAll()
+        chapterOrder.removeAll()
+    }
+
     // MARK: - Key
 
     static func tocKey(sourceID: String, bookID: String) -> String {

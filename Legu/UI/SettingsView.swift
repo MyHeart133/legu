@@ -13,6 +13,19 @@ struct SettingsView: View {
                     LabeledContent("书架", value: "\(shelf.books.count) 本")
                 }
 
+                Section("存储") {
+                    NavigationLink {
+                        CacheManagementView()
+                    } label: {
+                        Label("缓存管理", systemImage: "internaldrive")
+                    }
+                    NavigationLink {
+                        DownloadsView()
+                    } label: {
+                        Label("下载管理", systemImage: "arrow.down.circle")
+                    }
+                }
+
                 Section("关于") {
                     LabeledContent("版本", value: AppInfo.version)
                     Text("乐读(Legu)— 书源式小说阅读器\n\n· 内置七猫、番茄等原生书源\n· 支持导入 Legado 书源(JSON),兼容大部分阅读书源规则\n· 搜索 / 目录 / 正文全部在线读取,自动记录阅读进度\n· 阅读排版在阅读页底部「排版」按钮中调整(字体/字号/行距/段距/缩进/主题)")

@@ -33,7 +33,7 @@ struct SourceBook: Identifiable, Equatable, Hashable {
     var id: String { "\(sourceID):\(sourceBookID)" }
 }
 
-struct SourceChapter: Identifiable, Equatable {
+struct SourceChapter: Identifiable, Equatable, Codable {
     var id: String
     var index: Int
     var title: String

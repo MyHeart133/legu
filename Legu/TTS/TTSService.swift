@@ -280,18 +280,14 @@ final class TTSService: NSObject, ObservableObject {
     }
 
     private func synthesize(index: Int, text: String, gen: Int) async throws -> Data {
-        guard let engine else {
-            throw SourceError.unsupported("未配置朗读引擎")
-        }
         if let existing = synthTasks[index] {
             if let data = try await existing.value {
                 return data
             }
         }
-        let (_, voice) = TTSVoiceID.parse(voiceRaw)
-        let currentRate = rate
-        let task = Task<Data?, Error> {
-            try await engine.synthesize(text: text, voiceID: voice, rate: currentRate)
+        let task = Task<Data?, Error> { [weak self] in
+            guard let self else { return nil }
+            return try await self.synthWithCache(text: text)
         }
         synthTasks[index] = task
         let result = try await task.value
@@ -303,6 +299,23 @@ final class TTSService: NSObject, ObservableObject {
         return data
     }
 
+    /// 合成单句:磁盘缓存优先 → 引擎合成 → 写缓存
+    private func synthWithCache(text: String) async throws -> Data? {
+        guard let engine else {
+            throw SourceError.unsupported("未配置朗读引擎")
+        }
+        let (_, voice) = TTSVoiceID.parse(voiceRaw)
+        let currentRate = rate
+        if let hit = TTSAudioCache.read(voiceID: voice, rate: currentRate, text: text) {
+            return hit
+        }
+        let result = try await engine.synthesize(text: text, voiceID: voice, rate: currentRate)
+        if let data = result {
+            TTSAudioCache.write(data, voiceID: voice, rate: currentRate, text: text)
+        }
+        return result
+    }
+
     private func prefetchUpcoming() {
         guard let engine, engine.isRemote else { return }
         let gen = generation
@@ -311,12 +324,10 @@ final class TTSService: NSObject, ObservableObject {
             guard index < sentences.count else { continue }
             guard audioCache[index] == nil, synthTasks[index] == nil else { continue }
             let text = sentences[index]
-            let (_, voice) = TTSVoiceID.parse(voiceRaw)
-            let currentRate = rate
-            synthTasks[index] = Task<Data?, Error> {
-                let data = try await engine.synthesize(text: text, voiceID: voice, rate: currentRate)
-                await MainActor.run {
-                    guard gen == self.generation else { return }
+            synthTasks[index] = Task<Data?, Error> { [weak self] in
+                guard let self else { return nil }
+                let data = try await self.synthWithCache(text: text)
+                if gen == self.generation, let data {
                     self.audioCache[index] = data
                 }
                 return data
