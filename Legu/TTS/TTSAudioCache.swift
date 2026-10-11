@@ -9,15 +9,15 @@ enum TTSAudioCache {
         return base.appendingPathComponent("legu-tts", isDirectory: true)
     }
 
-    static func fileURL(voiceID: String, rate: Double, text: String) -> URL {
+    static func fileURL(voiceID: String, rate: Float, text: String) -> URL {
         dir.appendingPathComponent(StableHash.hex("\(voiceID)|\(rate)|\(text)") + ".bin")
     }
 
-    static func read(voiceID: String, rate: Double, text: String) -> Data? {
+    static func read(voiceID: String, rate: Float, text: String) -> Data? {
         try? Data(contentsOf: fileURL(voiceID: voiceID, rate: rate, text: text))
     }
 
-    static func write(_ data: Data, voiceID: String, rate: Double, text: String) {
+    static func write(_ data: Data, voiceID: String, rate: Float, text: String) {
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try data.write(to: fileURL(voiceID: voiceID, rate: rate, text: text), options: .atomic)
