@@ -150,11 +150,11 @@ final class FontRegistry: ObservableObject {
             }
             for d in descriptors {
                 let ps = (CTFontDescriptorCopyAttribute(d, kCTFontNameAttribute) as? String) ?? ""
-                let full = (CTFontDescriptorCopyAttribute(d, kCTFontFullNameAttribute) as? String) ?? ps
                 guard !ps.isEmpty else { continue }
+                let display = UIFont(name: ps, size: 12)?.familyName ?? ps
                 found.append(CustomFont(
                     id: "custom:" + ps,
-                    displayName: full,
+                    displayName: display,
                     postScriptName: ps,
                     fileName: file.lastPathComponent
                 ))
