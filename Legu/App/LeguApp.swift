@@ -5,6 +5,7 @@ struct LeguApp: App {
     @StateObject private var sourceStore = SourceStore()
     @StateObject private var shelfStore = ShelfStore()
     @StateObject private var settingsStore = SettingsStore()
+    @StateObject private var ttsStore = TTSStore()
 
     var body: some Scene {
         WindowGroup {
@@ -12,10 +13,12 @@ struct LeguApp: App {
                 .environmentObject(sourceStore)
                 .environmentObject(shelfStore)
                 .environmentObject(settingsStore)
+                .environmentObject(ttsStore)
                 .task {
                     try? await Task.sleep(nanoseconds: 400_000_000)
                     await MainActor.run {
                         sourceStore.importBundledIfNeeded()
+                        TTSService.shared.configure(store: ttsStore)
                     }
                 }
         }

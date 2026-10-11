@@ -21,11 +21,13 @@ targets:
       properties:
         CFBundleDisplayName: 乐读
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "1.3.0"
-        CFBundleVersion: "6"
+        CFBundleShortVersionString: "1.4.0"
+        CFBundleVersion: "7"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        UIBackgroundModes:
+          - audio
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIRequiredDeviceCapabilities:

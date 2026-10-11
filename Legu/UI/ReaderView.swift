@@ -21,6 +21,7 @@ struct ReaderView: View {
     @State private var showCatalog = false
     @State private var showControls = true
     @State private var showTypoPanel = false
+    @State private var showListening = false
     @StateObject private var pageModel = PageReaderModel()
 
     init(book: SourceBook, sourceName: String, chapters: [SourceChapter], initialIndex: Int, initialOffset: Int? = nil) {
@@ -79,9 +80,27 @@ struct ReaderView: View {
         .toolbar(.hidden, for: .tabBar)
         .statusBarHidden(!showControls && typo.hideStatusBar)
         .sheet(isPresented: $showCatalog) { catalogSheet }
+        .sheet(isPresented: $showListening) {
+            ListeningView(
+                book: book,
+                chapters: chapters,
+                startChapter: index,
+                startOffset: typo.readerMode == "scroll" ? nil : pageModel.currentOffset
+            )
+        }
         .task(id: "\(index)-\(typo.readerMode)") { await loadContent() }
         .onAppear {
             _ = shelf.add(book, sourceName: sourceName)
+            TTSService.shared.onProgress = { chapter, offset in
+                guard chapter >= 0, chapter < chapters.count else { return }
+                shelf.updateProgress(
+                    sourceID: book.sourceID,
+                    sourceBookID: book.sourceBookID,
+                    chapterIndex: chapter,
+                    chapterTitle: chapters[chapter].title,
+                    offset: offset
+                )
+            }
         }
     }
 
@@ -281,6 +300,7 @@ struct ReaderView: View {
                 barButton("上一章", "chevron.left") { goToChapter(index - 1) }
                     .disabled(index <= 0)
                 barButton("目录", "list.bullet") { showCatalog = true }
+                barButton("听书", "headphones") { showListening = true }
                 barButton("排版", "textformat.size") {
                     withAnimation(.easeInOut(duration: 0.16)) {
                         showTypoPanel.toggle()
