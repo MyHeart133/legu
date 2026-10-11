@@ -31,6 +31,11 @@ open Legu.xcodeproj
 
 CI(GitHub Actions)会自动构建测试并产出未签名 IPA(`legu-unsigned-ipa` artifact)。
 
+## 安装
+
+未签名 IPA 见 [Releases](https://github.com/MyHeart133/legu/releases)(`Legu-unsigned.ipa`),
+用 Sideloadly / AltStore 等自签工具安装(iOS 17+)。
+
 ## 结构
 
 ```
