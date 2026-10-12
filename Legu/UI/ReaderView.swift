@@ -23,6 +23,10 @@ struct ReaderView: View {
     @State private var scrollBox = ReaderScrollBox()
     @State private var renderCache = ReaderRenderCache()
     @State private var hasScrolledDown = false
+    @State private var didRestorePosition = false
+    @State private var lastSavedChapter = -1
+    @State private var lastSavedOffset = -1
+    @State private var lastSaveTime = Date.distantPast
     @State private var loading = false
     @State private var errorText: String?
     @State private var showCatalog = false
@@ -67,25 +71,31 @@ struct ReaderView: View {
         return hasher.finalize()
     }
 
-    /// 后台构建:章节文本 → attributed + 高度(避免章节衔接时阻塞主线程)
+    /// 后台构建(幂等):章节文本 → attributed + 高度 + 行表;已备好的直接复用
     private func prepareChapter(index chapterIndex: Int, text: String) async -> (baseHash: Int, height: CGFloat) {
         var hasher = Hasher()
         hasher.combine(text)
         let baseHash = hasher.finalize()
         let typo = self.typo
+        let key = Self.renderKey(baseHash: baseHash, typo: typo, highlight: nil)
+        if let cached = renderCache.preparedInfo(index: chapterIndex, key: key) {
+            return (baseHash, cached.sectionHeight)
+        }
         let font = resolvedFont
         let width = max(120, (scrollBox.scrollView?.bounds.width ?? UIScreen.main.bounds.width) - typo.horizontalPadding * 2)
         let result = await Task.detached(priority: .userInitiated) {
             let attributed = ReaderTextRenderer.attributedString(text, typo: typo, font: font)
-            let height = ReaderTextRenderer.measureHeight(attributed, width: width)
-            return (attributed, height)
+            let layout = ReaderTextRenderer.measureLayout(attributed, width: width)
+            return (attributed, layout.height, layout.lines)
         }.value
-        renderCache.prime(
-            index: chapterIndex,
-            key: Self.renderKey(baseHash: baseHash, typo: typo, highlight: nil),
-            attributed: result.0
-        )
+        guard !Task.isCancelled else { return (baseHash, 0) }
+        renderCache.prime(index: chapterIndex, key: key, attributed: result.0)
         let sectionHeight = result.1 + ceil(typo.fontSize * 0.85 * 1.3) + 18 + 24
+        renderCache.storePrepared(index: chapterIndex, ReaderRenderCache.Prepared(
+            key: key,
+            sectionHeight: sectionHeight,
+            lines: result.2
+        ))
         return (baseHash, sectionHeight)
     }
 
@@ -148,6 +158,9 @@ struct ReaderView: View {
         }
         .onChange(of: index) { _, _ in
             syncFollow()
+        }
+        .onDisappear {
+            savePositionNow()
         }
     }
 
@@ -608,7 +621,11 @@ struct ReaderView: View {
             loading = false
             saveProgress(chapter)
             prefetchNext()
-            scrollToTop()
+            if index == initialIndex, (initialOffset ?? 0) > 0, !didRestorePosition {
+                restoreReadingPositionIfNeeded()
+            } else {
+                scrollToTop()
+            }
             syncFollow()
             // 短章自动续接:内容不足一屏时继续加载下一章
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -668,13 +685,12 @@ struct ReaderView: View {
                 guard typo.readerMode == "scroll", !Task.isCancelled else { return }
                 guard !window.contains(where: { $0.index == prev }) else { return }
                 let sv = scrollBox.scrollView
-                let oldY = sv?.contentOffset.y ?? 0
                 window.insert(ReaderWindowChapter(index: prev, title: chapter.title, text: text, baseHash: prepared.baseHash, height: prepared.height), at: 0)
                 trimWindow(keepAround: index)
                 if let sv {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-                        let maxY = max(0, sv.contentSize.height - sv.bounds.height + sv.adjustedContentInset.bottom)
-                        sv.setContentOffset(CGPoint(x: 0, y: min(maxY, oldY + prepared.height)), animated: false)
+                    // 在调整时刻用当前偏移 + 插入高度(用户若在期间滚动也能保持视觉位置)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                        sv.setContentOffset(CGPoint(x: 0, y: max(0, sv.contentOffset.y + prepared.height)), animated: false)
                     }
                 }
             } catch {
@@ -690,19 +706,20 @@ struct ReaderView: View {
         let y = sv.contentOffset.y
         let visibleBottom = y + sv.bounds.height
         let contentBottom = sv.contentSize.height - sv.adjustedContentInset.bottom
-        if sv.contentSize.height <= sv.bounds.height + 1 || visibleBottom > contentBottom - 260 {
+        if sv.contentSize.height <= sv.bounds.height + 1 || visibleBottom > contentBottom - 700 {
             loadNextIntoWindow()
         }
-        if hasScrolledDown, y < 40, (window.first?.index ?? 0) > 0 {
+        if hasScrolledDown, y < 80, (window.first?.index ?? 0) > 0 {
             loadPrevIntoWindow()
         }
     }
 
-    /// 滚动事件:更新当前章(进度 / 跟随语义)+ 触发续接
+    /// 滚动事件:更新当前章(进度 / 跟随语义)+ 保存进度 + 触发续接
     private func handleOffsetChange(_ y: CGFloat, _ sv: UIScrollView) {
         guard typo.readerMode == "scroll", !window.isEmpty else { return }
         if y > 300 { hasScrolledDown = true }
         updateCurrentChapter(y, sv)
+        saveReadingPositionIfNeeded(y: y, sv: sv)
         checkWindowLoad()
     }
 
@@ -726,8 +743,85 @@ struct ReaderView: View {
         if let nr = ttsHighlight, nr.chapterIndex != found {
             following = false
         }
-        if found >= 0, found < chapters.count {
-            saveProgress(chapters[found])
+    }
+
+    // MARK: - 阅读进度(章内位置保存 / 恢复)
+
+    /// 当前阅读位置(章索引 + 章内字符偏移;基于行表,精确到行)
+    private func readingPosition(y: CGFloat, sv: UIScrollView) -> (chapter: Int, offset: Int)? {
+        let probe = y + sv.adjustedContentInset.top + 120
+        var acc: CGFloat = typo.verticalPadding
+        let titleBlock = 24 + ceil(typo.fontSize * 0.85 * 1.3) + 18
+        for wc in window {
+            let next = acc + wc.height
+            if probe < next {
+                let yInText = probe - acc - titleBlock
+                let key = Self.renderKey(baseHash: wc.baseHash, typo: typo, highlight: nil)
+                guard let info = renderCache.preparedInfo(index: wc.index, key: key), !info.lines.isEmpty else {
+                    return (wc.index, 0)
+                }
+                var offset = 0
+                for line in info.lines {
+                    if line.top <= yInText {
+                        offset = line.offset
+                    } else {
+                        break
+                    }
+                }
+                return (wc.index, offset)
+            }
+            acc = next
+        }
+        return nil
+    }
+
+    /// 保存进度:换章立即存;同章每 2 秒且移动超过 120 字存一次(节流防频繁写盘)
+    private func saveReadingPositionIfNeeded(y: CGFloat, sv: UIScrollView, force: Bool = false) {
+        guard let pos = readingPosition(y: y, sv: sv) else { return }
+        guard pos.chapter >= 0, pos.chapter < chapters.count else { return }
+        let now = Date()
+        let chapterChanged = pos.chapter != lastSavedChapter
+        let moved = abs(pos.offset - lastSavedOffset) >= 120
+        guard force || chapterChanged || (moved && now.timeIntervalSince(lastSaveTime) >= 2) else { return }
+        lastSavedChapter = pos.chapter
+        lastSavedOffset = pos.offset
+        lastSaveTime = now
+        shelf.updateProgress(
+            sourceID: book.sourceID,
+            sourceBookID: book.sourceBookID,
+            chapterIndex: pos.chapter,
+            chapterTitle: chapters[pos.chapter].title,
+            offset: pos.offset
+        )
+    }
+
+    /// 退出阅读器时立即保存当前位置
+    private func savePositionNow() {
+        guard typo.readerMode == "scroll", !window.isEmpty, let sv = scrollBox.scrollView else { return }
+        saveReadingPositionIfNeeded(y: sv.contentOffset.y, sv: sv, force: true)
+    }
+
+    /// 首次打开且书架有章内偏移时,恢复到上次位置
+    private func restoreReadingPositionIfNeeded() {
+        guard !didRestorePosition else { return }
+        guard let target = initialOffset, target > 0, index == initialIndex else { return }
+        didRestorePosition = true
+        guard let wc = window.first(where: { $0.index == index }) else { return }
+        let key = Self.renderKey(baseHash: wc.baseHash, typo: typo, highlight: nil)
+        guard let info = renderCache.preparedInfo(index: wc.index, key: key), !info.lines.isEmpty else { return }
+        var lineTop: CGFloat = 0
+        for line in info.lines {
+            if line.offset <= target {
+                lineTop = line.top
+            } else {
+                break
+            }
+        }
+        let titleBlock = 24 + ceil(typo.fontSize * 0.85 * 1.3) + 18
+        let y = typo.verticalPadding + titleBlock + lineTop - 36
+        guard let sv = scrollBox.scrollView else { return }
+        DispatchQueue.main.async {
+            sv.setContentOffset(CGPoint(x: 0, y: max(0, y)), animated: false)
         }
     }
 
@@ -740,9 +834,8 @@ struct ReaderView: View {
             if center - firstIdx >= lastIdx - center {
                 let removed = window.removeFirst()
                 if let sv = scrollBox.scrollView {
-                    let oldY = sv.contentOffset.y
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-                        sv.setContentOffset(CGPoint(x: 0, y: max(0, oldY - removed.height)), animated: false)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                        sv.setContentOffset(CGPoint(x: 0, y: max(0, sv.contentOffset.y - removed.height)), animated: false)
                     }
                 }
             } else {
@@ -776,7 +869,10 @@ struct ReaderView: View {
             )
             guard !BookCache.shared.hasChapter(key) else { continue }
             Task {
-                _ = try? await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
+                if let text = try? await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter) {
+                    // 预热:排版 + 高度 + 行表提前备好,衔接时零等待
+                    _ = await prepareChapter(index: next, text: text)
+                }
             }
         }
     }
@@ -843,10 +939,27 @@ private struct ReaderScrollBridge: UIViewRepresentable {
 /// 章节渲染缓存:按签名复用 attributed,避免每次界面刷新都重建全文(耗电 / 卡顿优化)
 @MainActor
 final class ReaderRenderCache {
+    struct Prepared {
+        let key: Int
+        let sectionHeight: CGFloat
+        /// 行表:行顶 Y(相对正文顶部)与起始字符偏移
+        let lines: [(top: CGFloat, offset: Int)]
+    }
+
     private var store: [Int: (key: Int, attributed: NSAttributedString)] = [:]
+    private var prepared: [Int: Prepared] = [:]
 
     func prime(index: Int, key: Int, attributed: NSAttributedString) {
         store[index] = (key, attributed)
+    }
+
+    func storePrepared(index: Int, _ value: Prepared) {
+        prepared[index] = value
+    }
+
+    func preparedInfo(index: Int, key: Int) -> Prepared? {
+        guard let p = prepared[index], p.key == key else { return nil }
+        return p
     }
 
     func attributed(index: Int, key: Int, build: () -> NSAttributedString) -> NSAttributedString {
@@ -860,9 +973,11 @@ final class ReaderRenderCache {
 
     func trim(to indices: Set<Int>) {
         store = store.filter { indices.contains($0.key) }
+        prepared = prepared.filter { indices.contains($0.key) }
     }
 
     func clear() {
         store.removeAll()
+        prepared.removeAll()
     }
 }

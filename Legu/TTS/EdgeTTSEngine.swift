@@ -63,7 +63,8 @@ final class EdgeTTSEngine: TTSEngine {
                 lastError = error
                 Self.preferNewEndpoint.toggle()
                 if attempt < 2 {
-                    try? await Task.sleep(nanoseconds: UInt64(350_000_000 * (attempt + 1)))
+                    // 稍缓的重试间隔(避免对限流 / 抖动雪上加霜)
+                    try? await Task.sleep(nanoseconds: UInt64(600_000_000 * (attempt + 1)))
                     if Task.isCancelled { throw CancellationError() }
                 }
             }
@@ -72,49 +73,84 @@ final class EdgeTTSEngine: TTSEngine {
     }
 
     private func synthesizeOnce(text: String, voiceID: String, rate: Float, useNewEndpoint: Bool) async throws -> Data? {
-        let connectionID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        let base = useNewEndpoint ? Self.wssURLNew : Self.wssURLLegacy
-        let urlString = "\(base)&Sec-MS-GEC=\(Self.secMsGec())&Sec-MS-GEC-Version=\(Self.secMsGecVersion)&ConnectionId=\(connectionID)"
-        guard let url = URL(string: urlString) else {
-            throw SourceError.network("语音服务地址无效")
+        let pool = EdgeConnectionPool.shared
+        var connection = await pool.borrow(isNewEndpoint: useNewEndpoint)
+        let isReused = connection != nil
+        if connection == nil {
+            connection = Self.makeConnection(isNewEndpoint: useNewEndpoint)
+        }
+        guard let conn = connection else {
+            throw SourceError.network("语音服务连接失败")
         }
 
+        do {
+            let audio = try await Self.runRequest(on: conn, text: text, voiceID: voiceID, rate: rate)
+            var updated = conn
+            updated.configSent = true
+            await pool.giveBack(updated)
+            if isReused {
+                await pool.noteBorrowedSuccess()
+            }
+            return audio
+        } catch {
+            conn.task.cancel(with: .normalClosure, reason: nil)
+            conn.session.invalidateAndCancel()
+            if isReused, !Task.isCancelled, !(error is CancellationError) {
+                await pool.noteBorrowedFailure()
+            }
+            throw error
+        }
+    }
+
+    private static func makeConnection(isNewEndpoint: Bool) -> EdgeConnectionPool.Entry? {
+        let connectionID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let base = isNewEndpoint ? wssURLNew : wssURLLegacy
+        let urlString = "\(base)&Sec-MS-GEC=\(secMsGec())&Sec-MS-GEC-Version=\(secMsGecVersion)&ConnectionId=\(connectionID)"
+        guard let url = URL(string: urlString) else { return nil }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         let session = URLSession(configuration: configuration)
-        let task = session.webSocketTask(with: Self.handshakeRequest(url: url))
+        let task = session.webSocketTask(with: handshakeRequest(url: url))
         task.resume()
-        defer {
-            task.cancel(with: .normalClosure, reason: nil)
-            session.invalidateAndCancel()
+        return EdgeConnectionPool.Entry(
+            task: task, session: session,
+            isNewEndpoint: isNewEndpoint, configSent: false, createdAt: Date()
+        )
+    }
+
+    private static func runRequest(
+        on connection: EdgeConnectionPool.Entry,
+        text: String,
+        voiceID: String,
+        rate: Float
+    ) async throws -> Data {
+        let task = connection.task
+
+        // 1. 配置帧(每条连接只发一次;复用时跳过)
+        if !connection.configSent {
+            let config = "X-Timestamp:\(timestampString())\r\n"
+                + "Content-Type:application/json; charset=utf-8\r\n"
+                + "Path:speech.config\r\n\r\n"
+                + #"{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"#
+                + "\r\n"
+            try await task.send(.string(config))
         }
 
-        let requestID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-
-        // 1. 配置帧
-        let config = "X-Timestamp:\(Self.timestampString())\r\n"
-            + "Content-Type:application/json; charset=utf-8\r\n"
-            + "Path:speech.config\r\n\r\n"
-            + #"{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"#
-            + "\r\n"
-        try await task.send(.string(config))
-
         // 2. SSML 帧
-        let ssml = Self.makeSSML(text: text, voice: voiceID, rate: rate)
+        let requestID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let ssml = makeSSML(text: text, voice: voiceID, rate: rate)
         let ssmlMessage = "X-RequestId:\(requestID)\r\n"
             + "Content-Type:application/ssml+xml\r\n"
-            + "X-Timestamp:\(Self.timestampString())Z\r\n"
+            + "X-Timestamp:\(timestampString())Z\r\n"
             + "Path:ssml\r\n\r\n"
             + ssml
         try await task.send(.string(ssmlMessage))
 
-        // 3. 收音频
+        // 3. 收音频(必须收到 turn.end,否则连接作废交由上层重试)
         var audio = Data()
+        var reachedEnd = false
         let deadline = Date().addingTimeInterval(40)
-        while true {
-            if Date() > deadline {
-                break
-            }
+        while Date() <= deadline, !reachedEnd {
             let message: URLSessionWebSocketTask.Message
             do {
                 message = try await task.receive()
@@ -124,8 +160,7 @@ final class EdgeTTSEngine: TTSEngine {
             switch message {
             case .string(let textMessage):
                 if textMessage.contains("Path:turn.end") {
-                    guard !audio.isEmpty else { throw SourceError.decode("语音合成失败(空音频)") }
-                    return audio
+                    reachedEnd = true
                 }
             case .data(let data):
                 let bytes = [UInt8](data)
@@ -139,7 +174,8 @@ final class EdgeTTSEngine: TTSEngine {
                 break
             }
         }
-        guard !audio.isEmpty else { throw SourceError.decode("语音合成失败(无响应)") }
+        guard reachedEnd else { throw SourceError.decode("语音合成超时(连接作废)") }
+        guard !audio.isEmpty else { throw SourceError.decode("语音合成失败(空音频)") }
         return audio
     }
 
@@ -201,5 +237,63 @@ final class EdgeTTSEngine: TTSEngine {
         s = s.replacingOccurrences(of: "\"", with: "&quot;")
         s = s.replacingOccurrences(of: "'", with: "&apos;")
         return s
+    }
+}
+
+/// 共享 WebSocket 连接池:复用连接省去每句一次的 TLS 握手(省电 + 降低被限流概率)
+/// 安全退化:复用连接连续失败 3 次 → 判定服务端不支持复用,本次进程内不再池化
+actor EdgeConnectionPool {
+    static let shared = EdgeConnectionPool()
+
+    struct Entry {
+        let task: URLSessionWebSocketTask
+        let session: URLSession
+        let isNewEndpoint: Bool
+        var configSent: Bool
+        let createdAt: Date
+    }
+
+    /// 空闲连接最长保留时间(避开服务端空闲断开)
+    private static let maxIdleAge: TimeInterval = 90
+
+    private var idle: Entry?
+    private var reuseDisabled = false
+    private var borrowedFailures = 0
+
+    func borrow(isNewEndpoint: Bool) -> Entry? {
+        guard !reuseDisabled else { return nil }
+        guard let entry = idle else { return nil }
+        idle = nil
+        if entry.isNewEndpoint != isNewEndpoint || Date().timeIntervalSince(entry.createdAt) > Self.maxIdleAge {
+            entry.task.cancel(with: .normalClosure, reason: nil)
+            entry.session.invalidateAndCancel()
+            return nil
+        }
+        return entry
+    }
+
+    func giveBack(_ entry: Entry) {
+        guard !reuseDisabled, idle == nil else {
+            entry.task.cancel(with: .normalClosure, reason: nil)
+            entry.session.invalidateAndCancel()
+            return
+        }
+        idle = entry
+    }
+
+    func noteBorrowedSuccess() {
+        borrowedFailures = 0
+    }
+
+    func noteBorrowedFailure() {
+        borrowedFailures += 1
+        if borrowedFailures >= 3 {
+            reuseDisabled = true
+            if let entry = idle {
+                entry.task.cancel(with: .normalClosure, reason: nil)
+                entry.session.invalidateAndCancel()
+                idle = nil
+            }
+        }
     }
 }

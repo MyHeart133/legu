@@ -74,19 +74,45 @@ enum ReaderTextRenderer {
         return UIColor(red: 1.0, green: 0.83, blue: 0.29, alpha: alpha)
     }
 
-    /// CoreText 实测整段高度(线程安全,可在后台线程调用;用于连续滚动的章节定位与补偿)
-    nonisolated static func measureHeight(_ attributed: NSAttributedString, width: CGFloat) -> CGFloat {
-        guard attributed.length > 0, width > 10 else { return 0 }
+    /// CoreText 实测:整段高度 + 行表(行顶 Y 与起始字符偏移;线程安全,可在后台线程调用)
+    /// 行表用于滚动模式的进度保存(y→偏移)与恢复(偏移→y)
+    nonisolated static func measureLayout(
+        _ attributed: NSAttributedString,
+        width: CGFloat
+    ) -> (height: CGFloat, lines: [(top: CGFloat, offset: Int)]) {
+        guard attributed.length > 0, width > 10 else { return (0, []) }
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         var fitRange = CFRange()
-        let size = CTFramesetterSuggestFrameSizeWithConstraints(
+        let suggested = CTFramesetterSuggestFrameSizeWithConstraints(
             framesetter,
             CFRange(location: 0, length: 0),
             nil,
             CGSize(width: width, height: .greatestFiniteMagnitude),
             &fitRange
         )
-        return ceil(size.height)
+        let height = ceil(suggested.height)
+
+        let rect = CGRect(x: 0, y: 0, width: width, height: height + 500)
+        let path = CGPath(rect: rect, transform: nil)
+        let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
+        let ctLines = CTFrameGetLines(frame) as! [CTLine]
+        var origins = [CGPoint](repeating: .zero, count: ctLines.count)
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+        var lines: [(top: CGFloat, offset: Int)] = []
+        lines.reserveCapacity(ctLines.count)
+        for (i, line) in ctLines.enumerated() {
+            var ascent: CGFloat = 0
+            _ = CTLineGetTypographicBounds(line, &ascent, nil, nil)
+            let range = CTLineGetStringRange(line)
+            let baselineFromTop = rect.height - origins[i].y
+            lines.append((max(0, baselineFromTop - ascent), range.location))
+        }
+        return (height, lines)
+    }
+
+    /// CoreText 实测整段高度(线程安全,可在后台线程调用;用于连续滚动的章节定位与补偿)
+    nonisolated static func measureHeight(_ attributed: NSAttributedString, width: CGFloat) -> CGFloat {
+        measureLayout(attributed, width: width).height
     }
 
     // MARK: - 标点挤压

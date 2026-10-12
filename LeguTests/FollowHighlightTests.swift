@@ -110,6 +110,14 @@ final class FollowHighlightTests: XCTestCase {
         XCTAssertGreaterThan(shortHeight, 0)
         XCTAssertGreaterThan(longHeight, shortHeight)
         XCTAssertEqual(ReaderTextRenderer.measureHeight(short, width: 0), 0)
+
+        // 行表(进度保存/恢复用):行数、首行偏移、单调性
+        let layout = ReaderTextRenderer.measureLayout(long, width: 300)
+        XCTAssertEqual(layout.height, longHeight)
+        XCTAssertGreaterThan(layout.lines.count, 10)
+        XCTAssertEqual(layout.lines.first?.offset, 0)
+        let offsets = layout.lines.map { $0.offset }
+        XCTAssertEqual(offsets, offsets.sorted())
     }
 
     // MARK: NowReading

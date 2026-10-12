@@ -46,6 +46,13 @@ struct ReaderTextView: UIViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0 else { return nil }
+        // 同宽同内容直接复用上次测量(避免每次布局都整篇重排)
+        let coordinator = context.coordinator
+        if coordinator.measuredWidth == width,
+           coordinator.measuredRevision == revision,
+           let cached = coordinator.measuredSize {
+            return cached
+        }
         // 先同步宽度再测量(测量依赖容器宽度)
         let oldFrame = uiView.frame
         uiView.frame = CGRect(x: 0, y: 0, width: width, height: oldFrame.height)
@@ -58,7 +65,11 @@ struct ReaderTextView: UIViewRepresentable {
             let used = uiView.layoutManager.usedRect(for: uiView.textContainer).height
             height = used + uiView.textContainerInset.top + uiView.textContainerInset.bottom
         }
-        return CGSize(width: width, height: max(1, ceil(height)))
+        let result = CGSize(width: width, height: max(1, ceil(height)))
+        coordinator.measuredWidth = width
+        coordinator.measuredRevision = revision
+        coordinator.measuredSize = result
+        return result
     }
 
     func makeCoordinator() -> Coordinator {
@@ -69,6 +80,9 @@ struct ReaderTextView: UIViewRepresentable {
         var onTap: () -> Void
         var revision: Int = -1
         var scrollToken: Int = -1
+        var measuredWidth: CGFloat = -1
+        var measuredRevision: Int = Int.min
+        var measuredSize: CGSize?
 
         init(onTap: @escaping () -> Void) {
             self.onTap = onTap
