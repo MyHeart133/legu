@@ -584,8 +584,8 @@ struct ReaderView: View {
             scrollToTop()
             syncFollow()
             // 短章自动续接:内容不足一屏时继续加载下一章
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.checkWindowLoad()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                checkWindowLoad()
             }
         } catch {
             errorText = "正文加载失败:\(error.localizedDescription)"
@@ -612,8 +612,8 @@ struct ReaderView: View {
                 window.append(ReaderWindowChapter(index: next, title: chapter.title, text: text, height: height))
                 windowError = nil
                 trimWindow(keepAround: index)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                    self?.checkWindowLoad()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    checkWindowLoad()
                 }
             } catch {
                 windowError = "下一章加载失败,点「重试」继续"
