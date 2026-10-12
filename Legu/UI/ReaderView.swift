@@ -417,7 +417,9 @@ struct ReaderView: View {
 
     @ViewBuilder
     private var catalogDownloadButton: some View {
-        if let rec = downloads.record(for: offlineKey) {
+        if book.sourceID == ZLibrarySource.identifier {
+            EmptyView()
+        } else if let rec = downloads.record(for: offlineKey) {
             switch rec.status {
             case .downloading, .queued:
                 Button("下载中 \(Int(rec.progress * 100))%") {

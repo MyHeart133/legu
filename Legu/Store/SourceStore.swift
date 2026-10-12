@@ -57,6 +57,7 @@ final class SourceStore: ObservableObject {
 
     /// 内置源站点(导入去重用)
     static let nativeBaseURLs: [String: String] = [
+        "zlib": "https://z-lib.sk",
         "qimao": "https://api-bc.wtzw.com",
         "fanqie": "https://fanqienovel.com",
         "202xs": "https://202xs.com",

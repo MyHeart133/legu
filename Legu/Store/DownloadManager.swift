@@ -206,6 +206,37 @@ final class DownloadManager: ObservableObject {
         save()
     }
 
+    /// 登记整本导入的书(Z-Library 等):已完成状态,供「下载管理」统计与删除
+    func registerImported(book: SourceBook, sourceName: String, chapterCount: Int, bytes: Int64) {
+        let key = OfflineStore.bookKey(sourceID: book.sourceID, sourceBookID: book.sourceBookID)
+        if let idx = records.firstIndex(where: { $0.id == key }) {
+            records[idx].totalChapters = chapterCount
+            records[idx].doneCount = chapterCount
+            records[idx].bytes = bytes
+            records[idx].failedCount = 0
+            records[idx].status = .completed
+            records[idx].updatedAt = Date()
+        } else {
+            records.insert(DownloadRecord(
+                id: key,
+                sourceID: book.sourceID,
+                sourceBookID: book.sourceBookID,
+                title: book.title,
+                author: book.author,
+                cover: book.cover,
+                sourceName: sourceName,
+                totalChapters: chapterCount,
+                doneCount: chapterCount,
+                failedCount: 0,
+                bytes: bytes,
+                status: .completed,
+                createdAt: Date(),
+                updatedAt: Date()
+            ), at: 0)
+        }
+        save()
+    }
+
     // MARK: - 下载执行
 
     private func pump() {

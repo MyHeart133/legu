@@ -13,6 +13,14 @@ struct SettingsView: View {
                     LabeledContent("书架", value: "\(shelf.books.count) 本")
                 }
 
+                Section("书库") {
+                    NavigationLink {
+                        ZLibraryView()
+                    } label: {
+                        Label("Z-Library 账号", systemImage: "building.columns")
+                    }
+                }
+
                 Section("存储") {
                     NavigationLink {
                         CacheManagementView()

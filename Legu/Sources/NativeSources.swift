@@ -11,6 +11,7 @@ enum NativeSources {
     static let groupName = "内置书源"
 
     static let definitions: [Definition] = [
+        Definition(id: "zlib", name: "Z-Library", group: "网络书库"),
         Definition(id: "qimao", name: "七猫免费小说", group: groupName),
         Definition(id: "fanqie", name: "番茄小说", group: groupName),
         Definition(id: "202xs", name: "202小说网", group: groupName),
@@ -29,6 +30,7 @@ enum NativeSources {
 
     static func make(_ id: String) -> ContentSource? {
         switch id {
+        case "zlib": return ZLibrarySource()
         case "qimao": return QimaoSource()
         case "fanqie": return FanqieSource()
         case "202xs": return Template202Source(.init(id: "202xs", name: "202小说网", base: "https://202xs.com"))

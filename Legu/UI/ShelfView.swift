@@ -183,12 +183,15 @@ struct BookDetailView: View {
     @EnvironmentObject var shelf: ShelfStore
     @EnvironmentObject var sourceStore: SourceStore
     @ObservedObject private var downloads = DownloadManager.shared
+    @ObservedObject private var zlibImporter = ZLibImporter.shared
 
     @State private var current: BookAlternative
     @State private var detail: SourceBook
     @State private var chapters: [SourceChapter] = []
     @State private var loading = true
     @State private var errorText: String?
+    @State private var zlibImporting = false
+    @State private var zlibError: String?
 
     init(book: SourceBook, sourceName: String, alternatives: [BookAlternative] = []) {
         var alts = alternatives
@@ -359,6 +362,55 @@ struct BookDetailView: View {
 
     @ViewBuilder
     private var downloadRow: some View {
+        if current.sourceID == ZLibrarySource.identifier {
+            zlibImportRow
+        } else {
+            standardDownloadRow
+        }
+    }
+
+    /// Z-Library:整本下载 + 解析(下载后离线阅读、听书)
+    @ViewBuilder
+    private var zlibImportRow: some View {
+        let key = offlineKey
+        if OfflineStore.loadTOC(key) != nil {
+            HStack {
+                Label("已下载 · 离线可读可听", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline)
+                    .foregroundColor(.green)
+                Spacer()
+                if zlibImporting {
+                    ProgressView()
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(zlibImporting ? zlibImporter.phase.text : "下载整本后离线阅读(排版 / 听书照常)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    if zlibImporting {
+                        ProgressView()
+                    } else {
+                        Button("下载并阅读") {
+                            Task { await startZlibImport() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                if let zlibError {
+                    Text(zlibError)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    @ViewBuilder
+    private var standardDownloadRow: some View {
         let key = offlineKey
         if let rec = downloads.record(for: key) {
             VStack(alignment: .leading, spacing: 8) {
@@ -387,6 +439,19 @@ struct BookDetailView: View {
                 .buttonStyle(.bordered)
                 .disabled(chapters.isEmpty)
             }
+        }
+    }
+
+    private func startZlibImport() async {
+        zlibImporting = true
+        zlibError = nil
+        defer { zlibImporting = false }
+        do {
+            _ = try await ZLibImporter.shared.importBook(current.book)
+            _ = shelf.add(current.book, sourceName: current.sourceName)
+            await load(useCache: false)
+        } catch {
+            zlibError = error.localizedDescription
         }
     }
 
@@ -424,6 +489,17 @@ struct BookDetailView: View {
         }
         let key = BookCache.tocKey(sourceID: current.sourceID, bookID: current.book.sourceBookID)
         let offlineKey = OfflineStore.bookKey(sourceID: current.sourceID, sourceBookID: current.book.sourceBookID)
+        // Z-Library:目录 = 本地解析结果;未下载时显示下载引导(不报错)
+        if current.sourceID == ZLibrarySource.identifier {
+            if let toc = OfflineStore.loadTOC(offlineKey), !toc.isEmpty {
+                chapters = toc
+            }
+            loading = false
+            if let d = try? await source.fetchDetail(current.book.sourceBookID) {
+                detail = d
+            }
+            return
+        }
         if useCache, let cached = BookCache.shared.toc(for: key), !cached.isEmpty {
             chapters = cached
             loading = false
