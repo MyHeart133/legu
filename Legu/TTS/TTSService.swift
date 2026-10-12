@@ -95,6 +95,23 @@ final class TTSService: NSObject, ObservableObject {
         }
     }
 
+    /// 音色自检:用当前引擎合成一小段,返回结果描述(不打断播放)
+    func testCurrentVoice() async -> String {
+        guard let engine else { return "未配置朗读引擎" }
+        if !engine.isRemote {
+            return "系统语音(离线)无需联网,应可直接朗读"
+        }
+        let (_, voice) = TTSVoiceID.parse(voiceRaw)
+        let currentRate = rate
+        do {
+            let data = try await engine.synthesize(text: "这是一段音色测试。", voiceID: voice, rate: currentRate)
+            guard let d = data, !d.isEmpty else { return "失败:引擎未返回音频" }
+            return "成功(收到 \(max(1, d.count / 1024)) KB 音频)"
+        } catch {
+            return "失败:\(error.localizedDescription)"
+        }
+    }
+
     // MARK: - 播放控制
 
     func start(

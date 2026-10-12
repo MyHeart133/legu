@@ -122,4 +122,14 @@ final class TTSTests: XCTestCase {
         XCTAssertTrue(muid.allSatisfy { $0.isHexDigit })
         XCTAssertEqual(muid, muid.uppercased())
     }
+
+    // MARK: 双端点(2026-10 微软灰度迁移)
+
+    func testEdgeEndpoints() {
+        XCTAssertTrue(EdgeTTSEngine.wssURLNew.hasPrefix("wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1?Ocp-Apim-Subscription-Key="))
+        XCTAssertTrue(EdgeTTSEngine.wssURLNew.hasSuffix(EdgeTTSEngine.trustedToken))
+        XCTAssertTrue(EdgeTTSEngine.wssURLLegacy.hasPrefix("wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken="))
+        XCTAssertTrue(EdgeTTSEngine.wssURLLegacy.hasSuffix(EdgeTTSEngine.trustedToken))
+        XCTAssertNotEqual(EdgeTTSEngine.wssURLNew, EdgeTTSEngine.wssURLLegacy)
+    }
 }

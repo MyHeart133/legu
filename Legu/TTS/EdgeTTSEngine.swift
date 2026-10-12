@@ -4,11 +4,11 @@ import Foundation
 /// 微软 Edge 神经音色引擎(免费在线通道,社区同款协议)
 ///
 /// 协议要点:
-/// - WebSocket 到 speech.platform.bing.com,带 Sec-MS-GEC 时钟校验令牌(SHA256)
-/// - 握手必须带浏览器请求头(UA / Origin / Pragma 等)—— 裸连会被服务端 403 拒绝
-///   (2026-10 实测:无头 = 403,带头 = 稳定通过;对照 edge-tts 7.2.8 的 WSS_HEADERS)
+/// - WebSocket 带 Sec-MS-GEC 时钟校验令牌(SHA256)+ 浏览器请求头(裸连 403)
+/// - 2026-10 微软灰度迁移:新端点 api.msedgeservices.com(Edge 155 起);
+///   旧端点 speech.platform.bing.com 在已灰度地区会被 403 —— 双端点自动互为备胎
 /// - 先发 speech.config(输出 mp3),再发 SSML;二进制帧前 2 字节为大端头长度
-/// - 收到 Path:turn.end 文本帧表示合成完毕;连接偶发被重置 → 自动重试
+/// - 收到 Path:turn.end 文本帧表示合成完毕;失败自动重试 + 切换端点
 final class EdgeTTSEngine: TTSEngine {
     let identifier = "edge"
     let displayName = "微软神经音色(在线)"
@@ -17,7 +17,13 @@ final class EdgeTTSEngine: TTSEngine {
     static let trustedToken = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
     static let secMsGecVersion = "1-143.0.3650.75"
     static let browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
-    static let wssURL = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=\(trustedToken)"
+
+    /// 新端点(2026-10 起微软迁移目标;实测:新主机 + 现有令牌可用)
+    static let wssURLNew = "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1?Ocp-Apim-Subscription-Key=\(trustedToken)"
+    /// 旧端点(灰度期未迁移地区仍可用)
+    static let wssURLLegacy = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=\(trustedToken)"
+    /// 端点偏好(失败自动切换,进程内记忆)
+    private static var preferNewEndpoint = true
 
     /// 内置音色(14 个中文;动态列表失败时兜底)
     static let builtinVoices: [TTSVoice] = [
@@ -43,15 +49,19 @@ final class EdgeTTSEngine: TTSEngine {
 
     // MARK: - 合成
 
-    /// 对外入口:网络抖动兜底,最多 3 次尝试(每次全新连接 + 新 GEC)
+    /// 对外入口:失败自动重试,并在新旧端点间切换(灰度期两端可用性不同)
     func synthesize(text: String, voiceID: String, rate: Float) async throws -> Data? {
         var lastError: Error?
         for attempt in 0..<3 {
             do {
-                return try await synthesizeOnce(text: text, voiceID: voiceID, rate: rate)
+                return try await synthesizeOnce(
+                    text: text, voiceID: voiceID, rate: rate,
+                    useNewEndpoint: Self.preferNewEndpoint
+                )
             } catch {
                 if Task.isCancelled { throw CancellationError() }
                 lastError = error
+                Self.preferNewEndpoint.toggle()
                 if attempt < 2 {
                     try? await Task.sleep(nanoseconds: UInt64(350_000_000 * (attempt + 1)))
                     if Task.isCancelled { throw CancellationError() }
@@ -61,9 +71,10 @@ final class EdgeTTSEngine: TTSEngine {
         throw lastError ?? SourceError.network("语音合成失败")
     }
 
-    private func synthesizeOnce(text: String, voiceID: String, rate: Float) async throws -> Data? {
+    private func synthesizeOnce(text: String, voiceID: String, rate: Float, useNewEndpoint: Bool) async throws -> Data? {
         let connectionID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        let urlString = "\(Self.wssURL)&Sec-MS-GEC=\(Self.secMsGec())&Sec-MS-GEC-Version=\(Self.secMsGecVersion)&ConnectionId=\(connectionID)"
+        let base = useNewEndpoint ? Self.wssURLNew : Self.wssURLLegacy
+        let urlString = "\(base)&Sec-MS-GEC=\(Self.secMsGec())&Sec-MS-GEC-Version=\(Self.secMsGecVersion)&ConnectionId=\(connectionID)"
         guard let url = URL(string: urlString) else {
             throw SourceError.network("语音服务地址无效")
         }

@@ -14,6 +14,8 @@ struct ListeningView: View {
 
     @State private var systemVoices: [TTSVoice] = []
     @State private var showEngineEditor = false
+    @State private var testingVoice = false
+    @State private var voiceTestResult: String?
 
     private var selectedBinding: Binding<String> {
         Binding(
@@ -88,11 +90,18 @@ struct ListeningView: View {
                     .foregroundColor(.primary)
 
                     if let error = service.errorText {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 24)
+                        VStack(spacing: 8) {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                                .multilineTextAlignment(.center)
+                            Button("改用系统语音继续听") {
+                                Task { await switchToSystemVoice() }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        .padding(.horizontal, 24)
                     }
 
                     VStack(spacing: 14) {
@@ -140,6 +149,28 @@ struct ListeningView: View {
                             } label: {
                                 Image(systemName: "slider.horizontal.3")
                             }
+                        }
+
+                        HStack(spacing: 10) {
+                            Text("检测")
+                                .font(.subheadline)
+                                .frame(width: 40, alignment: .leading)
+                            Button("测试当前音色") {
+                                Task { await runVoiceTest() }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(testingVoice)
+                            if testingVoice {
+                                ProgressView().controlSize(.small)
+                            }
+                            if let voiceTestResult {
+                                Text(voiceTestResult)
+                                    .font(.caption)
+                                    .foregroundColor(voiceTestResult.hasPrefix("成功") ? .secondary : .red)
+                                    .lineLimit(2)
+                            }
+                            Spacer()
                         }
 
                         HStack(spacing: 10) {
@@ -213,6 +244,22 @@ struct ListeningView: View {
             return String(format: "%d:%02d", remaining / 60, remaining % 60)
         }
         return "关闭"
+    }
+
+    private func runVoiceTest() async {
+        testingVoice = true
+        voiceTestResult = nil
+        defer { testingVoice = false }
+        voiceTestResult = await service.testCurrentVoice()
+    }
+
+    /// 远程引擎连不上时的一键兜底:切到系统语音(离线可用)
+    private func switchToSystemVoice() async {
+        let voices = await SystemTTSEngine().availableVoices()
+        guard let first = voices.first else { return }
+        ttsStore.selectedVoiceID = "system:\(first.id)"
+        service.applySettings()
+        voiceTestResult = nil
     }
 }
 

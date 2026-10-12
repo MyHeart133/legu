@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 阅读器:全屏沉浸式,点正文呼出控制层;
 /// 正文由 TextKit 渲染(精确行距/段距/首行缩进/字距),排版面板内嵌
@@ -15,7 +16,12 @@ struct ReaderView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var index: Int
-    @State private var content = ""
+    @State private var window: [ReaderWindowChapter] = []
+    @State private var windowLoading = false
+    @State private var windowError: String?
+    @State private var navToken = 0
+    @State private var scrollBox = ReaderScrollBox()
+    @State private var hasScrolledDown = false
     @State private var loading = false
     @State private var errorText: String?
     @State private var showCatalog = false
@@ -29,7 +35,6 @@ struct ReaderView: View {
     @State private var followRendered: NSRange?
     @State private var followScrollToken = 0
     @State private var following = true
-    @State private var loadedIndex = -1
 
     init(book: SourceBook, sourceName: String, chapters: [SourceChapter], initialIndex: Int, initialOffset: Int? = nil) {
         self.book = book
@@ -51,13 +56,15 @@ struct ReaderView: View {
         (index >= 0 && index < chapters.count) ? chapters[index] : nil
     }
 
-    /// 内容 + 排版 + 跟读高亮签名(变化时重建文本视图)
-    private var textRevision: Int {
+    /// 单章渲染签名(章节文本 + 排版 + 该章高亮;变化时重建文本视图)
+    private func chapterRevision(_ wc: ReaderWindowChapter) -> Int {
         var hasher = Hasher()
-        hasher.combine(content)
+        hasher.combine(wc.text)
         hasher.combine(typo)
-        hasher.combine(followRendered?.location ?? -1)
-        hasher.combine(followRendered?.length ?? -1)
+        if wc.index == index {
+            hasher.combine(followRendered?.location ?? -1)
+            hasher.combine(followRendered?.length ?? -1)
+        }
         return hasher.finalize()
     }
 
@@ -97,7 +104,7 @@ struct ReaderView: View {
                 startOffset: typo.readerMode == "scroll" ? nil : pageModel.currentOffset
             )
         }
-        .task(id: "\(index)-\(typo.readerMode)") { await loadContent() }
+        .task(id: "\(navToken)-\(typo.readerMode)") { await loadContent() }
         .onAppear {
             _ = shelf.add(book, sourceName: sourceName)
             TTSService.shared.onProgress = { chapter, offset in
@@ -109,6 +116,9 @@ struct ReaderView: View {
                     chapterTitle: chapters[chapter].title,
                     offset: offset
                 )
+            }
+            scrollBox.onOffsetChange = { y, sv in
+                handleOffsetChange(y, sv)
             }
             syncFollow()
         }
@@ -125,42 +135,76 @@ struct ReaderView: View {
     private var scrollBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if let ch = currentChapter {
-                    Text(ch.title)
-                        .font(swiftUIFont(size: typo.fontSize * 0.85))
-                        .foregroundColor(Color(hex: palette.secondary))
-                        .padding(.bottom, 18)
+                ReaderScrollBridge { sv in
+                    scrollBox.attach(sv)
                 }
-                if loading {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
-                    }
-                    .padding(.top, 60)
-                } else if let e = errorText {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(e)
-                            .font(.subheadline)
-                            .foregroundColor(Color(hex: palette.secondary))
-                        Button("重试") {
-                            Task { await loadContent() }
+                .frame(height: 0)
+
+                if window.isEmpty {
+                    if loading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
                         }
-                        .buttonStyle(.bordered)
+                        .padding(.top, 60)
+                    } else if let e = errorText {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(e)
+                                .font(.subheadline)
+                                .foregroundColor(Color(hex: palette.secondary))
+                            Button("重试") {
+                                Task { await loadContent() }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding(.top, 40)
                     }
-                    .padding(.top, 40)
                 } else {
-                    ReaderTextView(
-                        attributed: ReaderTextRenderer.attributedString(
-                            content, typo: typo, font: resolvedFont, highlight: followRendered
-                        ),
-                        revision: textRevision,
-                        onTap: { toggleControls() },
-                        scrollTarget: followRendered,
-                        scrollToken: followScrollToken
-                    )
-                    nextChapterButton
-                        .padding(.top, 30)
+                    ForEach(window) { wc in
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(wc.title)
+                                .font(swiftUIFont(size: typo.fontSize * 0.85))
+                                .foregroundColor(Color(hex: palette.secondary))
+                                .padding(.bottom, 18)
+                            ReaderTextView(
+                                attributed: ReaderTextRenderer.attributedString(
+                                    wc.text, typo: typo, font: resolvedFont,
+                                    highlight: wc.index == index ? followRendered : nil
+                                ),
+                                revision: chapterRevision(wc),
+                                onTap: { toggleControls() },
+                                scrollTarget: wc.index == index ? followRendered : nil,
+                                scrollToken: followScrollToken
+                            )
+                        }
+                        .padding(.top, 24)
+                    }
+
+                    if windowLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .controlSize(.small)
+                            Spacer()
+                        }
+                        .padding(.top, 16)
+                    }
+
+                    if let windowError {
+                        HStack(spacing: 10) {
+                            Text(windowError)
+                                .font(.caption)
+                                .foregroundColor(Color(hex: palette.secondary))
+                            Button("重试") {
+                                loadNextIntoWindow()
+                            }
+                            .font(.caption)
+                            .buttonStyle(.bordered)
+                            Spacer()
+                        }
+                        .padding(.top, 20)
+                    }
                 }
             }
             .padding(.horizontal, typo.horizontalPadding)
@@ -168,7 +212,6 @@ struct ReaderView: View {
             .padding(.bottom, 120)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .id(index)
     }
 
     private func swiftUIFont(size: CGFloat) -> Font {
@@ -263,19 +306,6 @@ struct ReaderView: View {
         default:
             EmptyView()
         }
-    }
-
-    private var nextChapterButton: some View {
-        Button {
-            goToChapter(index + 1)
-        } label: {
-            Text(index >= chapters.count - 1 ? "已是最后一章" : "下一章 →")
-                .font(.subheadline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-        }
-        .buttonStyle(.bordered)
-        .disabled(index >= chapters.count - 1)
     }
 
     // MARK: - 控制层
@@ -467,6 +497,7 @@ struct ReaderView: View {
     private func goToChapter(_ newIndex: Int) {
         let clamped = max(0, min(newIndex, chapters.count - 1))
         index = clamped
+        navToken += 1
         if typo.readerMode != "scroll" {
             pageModel.jumpTo(chapter: clamped, offset: 0)
         }
@@ -497,7 +528,7 @@ struct ReaderView: View {
         if nr.chapterIndex == index {
             following = true
             if typo.readerMode == "scroll" {
-                guard loadedIndex == index, !content.isEmpty else { return }
+                guard window.contains(where: { $0.index == nr.chapterIndex }) else { return }
                 if followRendered != range {
                     followRendered = range
                     followScrollToken += 1
@@ -506,13 +537,15 @@ struct ReaderView: View {
                 pageModel.setFollowHighlight(chapter: nr.chapterIndex, range: range)
             }
         } else if following {
-            // 自动翻到朗读章(滚动模式等内容加载完成后由 loadContent 再同步)
+            // 自动翻到朗读章(滚动模式重置窗口;翻页模式直接跳)
             if typo.readerMode != "scroll" {
                 pageModel.setFollowHighlight(chapter: nr.chapterIndex, range: range)
             }
             index = max(0, min(nr.chapterIndex, chapters.count - 1))
             if typo.readerMode != "scroll" {
                 pageModel.jumpTo(chapter: index, offset: nr.offset)
+            } else {
+                navToken += 1
             }
         } else {
             // 用户翻去别处阅读:不打扰,清掉高亮
@@ -536,35 +569,176 @@ struct ReaderView: View {
         guard typo.readerMode == "scroll" else { return }
         guard index >= 0, index < chapters.count else { return }
         let chapter = chapters[index]
-        let cacheKey = BookCache.chapterKey(
-            sourceID: book.sourceID,
-            bookID: book.sourceBookID,
-            chapterID: chapter.id
-        )
-        if let cached = BookCache.shared.chapter(for: cacheKey) {
-            content = cached
-            errorText = nil
-            loading = false
-            loadedIndex = index
-            saveProgress(chapter)
-            prefetchNext()
-            syncFollow()
-            return
-        }
         loading = true
         errorText = nil
-        content = ""
+        windowError = nil
         do {
             let text = try await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
-            content = text
-            loadedIndex = index
+            guard !Task.isCancelled else { return }
+            let height = measureChapterHeight(text: text, title: chapter.title)
+            window = [ReaderWindowChapter(index: index, title: chapter.title, text: text, height: height)]
+            hasScrolledDown = false
+            loading = false
             saveProgress(chapter)
             prefetchNext()
+            scrollToTop()
             syncFollow()
+            // 短章自动续接:内容不足一屏时继续加载下一章
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.checkWindowLoad()
+            }
         } catch {
             errorText = "正文加载失败:\(error.localizedDescription)"
+            loading = false
         }
-        loading = false
+    }
+
+    // MARK: - 连续滚动(章节窗口)
+
+    /// 向下续接一章
+    private func loadNextIntoWindow() {
+        guard typo.readerMode == "scroll", !windowLoading else { return }
+        let next = (window.last?.index ?? index) + 1
+        guard next < chapters.count, !window.contains(where: { $0.index == next }) else { return }
+        windowLoading = true
+        Task {
+            defer { windowLoading = false }
+            let chapter = chapters[next]
+            do {
+                let text = try await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
+                guard typo.readerMode == "scroll", !Task.isCancelled else { return }
+                guard !window.contains(where: { $0.index == next }) else { return }
+                let height = measureChapterHeight(text: text, title: chapter.title)
+                window.append(ReaderWindowChapter(index: next, title: chapter.title, text: text, height: height))
+                windowError = nil
+                trimWindow(keepAround: index)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    self?.checkWindowLoad()
+                }
+            } catch {
+                windowError = "下一章加载失败,点「重试」继续"
+            }
+        }
+    }
+
+    /// 向上衔接一章(保持视觉位置:补偿插入高度)
+    private func loadPrevIntoWindow() {
+        guard typo.readerMode == "scroll", !windowLoading else { return }
+        let prev = (window.first?.index ?? index) - 1
+        guard prev >= 0, !window.contains(where: { $0.index == prev }) else { return }
+        windowLoading = true
+        Task {
+            defer { windowLoading = false }
+            let chapter = chapters[prev]
+            do {
+                let text = try await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
+                guard typo.readerMode == "scroll", !Task.isCancelled else { return }
+                guard !window.contains(where: { $0.index == prev }) else { return }
+                let height = measureChapterHeight(text: text, title: chapter.title)
+                let sv = scrollBox.scrollView
+                let oldY = sv?.contentOffset.y ?? 0
+                window.insert(ReaderWindowChapter(index: prev, title: chapter.title, text: text, height: height), at: 0)
+                trimWindow(keepAround: index)
+                if let sv {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                        let maxY = max(0, sv.contentSize.height - sv.bounds.height + sv.adjustedContentInset.bottom)
+                        sv.setContentOffset(CGPoint(x: 0, y: min(maxY, oldY + height)), animated: false)
+                    }
+                }
+            } catch {
+                // 上一章加载失败:静默,继续滚顶可重试
+            }
+        }
+    }
+
+    /// 根据滚动状态判断是否需要续接 / 衔接
+    private func checkWindowLoad() {
+        guard typo.readerMode == "scroll", !window.isEmpty, !loading else { return }
+        guard let sv = scrollBox.scrollView else { return }
+        let y = sv.contentOffset.y
+        let visibleBottom = y + sv.bounds.height
+        let contentBottom = sv.contentSize.height - sv.adjustedContentInset.bottom
+        if sv.contentSize.height <= sv.bounds.height + 1 || visibleBottom > contentBottom - 260 {
+            loadNextIntoWindow()
+        }
+        if hasScrolledDown, y < 40, (window.first?.index ?? 0) > 0 {
+            loadPrevIntoWindow()
+        }
+    }
+
+    /// 滚动事件:更新当前章(进度 / 跟随语义)+ 触发续接
+    private func handleOffsetChange(_ y: CGFloat, _ sv: UIScrollView) {
+        guard typo.readerMode == "scroll", !window.isEmpty else { return }
+        if y > 300 { hasScrolledDown = true }
+        updateCurrentChapter(y, sv)
+        checkWindowLoad()
+    }
+
+    private func updateCurrentChapter(_ y: CGFloat, _ sv: UIScrollView) {
+        guard !window.isEmpty else { return }
+        let probe = y + sv.adjustedContentInset.top + 120
+        var acc: CGFloat = typo.verticalPadding
+        var found = window.first?.index ?? index
+        for wc in window {
+            let next = acc + wc.height
+            if probe < next {
+                found = wc.index
+                break
+            }
+            acc = next
+            found = wc.index
+        }
+        guard found != index else { return }
+        index = found
+        // 手动滚离朗读章 → 暂停跟随;滚回朗读章由 syncFollow 自动恢复
+        if let nr = ttsHighlight, nr.chapterIndex != found {
+            following = false
+        }
+        if found >= 0, found < chapters.count {
+            saveProgress(chapters[found])
+        }
+    }
+
+    /// 整段高度实测(标题 + 间距 + 正文;用于窗口定位与插入补偿)
+    private func measureChapterHeight(text: String, title: String) -> CGFloat {
+        let fullWidth = scrollBox.scrollView?.bounds.width ?? UIScreen.main.bounds.width
+        let width = max(120, fullWidth - typo.horizontalPadding * 2)
+        let tv = UITextView()
+        tv.textContainerInset = .zero
+        tv.textContainer.lineFragmentPadding = 0
+        tv.isScrollEnabled = false
+        tv.attributedText = ReaderTextRenderer.attributedString(text, typo: typo, font: resolvedFont)
+        tv.frame = CGRect(x: 0, y: 0, width: width, height: 0)
+        let textHeight = tv.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        let titleHeight = ceil(typo.fontSize * 0.85 * 1.3)
+        return ceil(textHeight) + titleHeight + 18 + 24
+    }
+
+    /// 窗口裁剪:超过上限时丢弃离当前章更远的一侧(丢顶部时补偿滚动位移)
+    private func trimWindow(keepAround center: Int) {
+        let maxCount = 12
+        while window.count > maxCount {
+            let firstIdx = window.first?.index ?? center
+            let lastIdx = window.last?.index ?? center
+            if center - firstIdx >= lastIdx - center {
+                let removed = window.removeFirst()
+                if let sv = scrollBox.scrollView {
+                    let oldY = sv.contentOffset.y
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                        sv.setContentOffset(CGPoint(x: 0, y: max(0, oldY - removed.height)), animated: false)
+                    }
+                }
+            } else {
+                _ = window.removeLast()
+            }
+        }
+    }
+
+    private func scrollToTop() {
+        guard let sv = scrollBox.scrollView else { return }
+        DispatchQueue.main.async {
+            sv.setContentOffset(CGPoint(x: 0, y: -sv.adjustedContentInset.top), animated: false)
+        }
     }
 
     private func prefetchNext() {
@@ -581,4 +755,59 @@ struct ReaderView: View {
             _ = try? await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
         }
     }
+}
+
+// MARK: - 连续滚动支持
+
+/// 滚动窗口中的一章
+struct ReaderWindowChapter: Identifiable {
+    let index: Int
+    let title: String
+    let text: String
+    /// 实测整段高度(标题 + 间距 + 正文)
+    let height: CGFloat
+
+    var id: Int { index }
+}
+
+/// 滚动桥:拿到外层 UIScrollView 并观察 contentOffset
+final class ReaderScrollBox: NSObject {
+    weak var scrollView: UIScrollView?
+    var onOffsetChange: (@MainActor (CGFloat, UIScrollView) -> Void)?
+    private var observation: NSKeyValueObservation?
+
+    func attach(_ sv: UIScrollView) {
+        guard scrollView !== sv else { return }
+        scrollView = sv
+        observation = sv.observe(\.contentOffset, options: [.new]) { [weak self] scroll, _ in
+            guard let handler = self?.onOffsetChange else { return }
+            let y = scroll.contentOffset.y
+            Task { @MainActor in
+                handler(y, scroll)
+            }
+        }
+    }
+}
+
+/// 零高辅助视图:向上找外层 UIScrollView 并交给滚动桥
+private struct ReaderScrollBridge: UIViewRepresentable {
+    let onReady: (UIScrollView) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        DispatchQueue.main.async {
+            var current = view.superview
+            while let v = current {
+                if let sv = v as? UIScrollView {
+                    onReady(sv)
+                    break
+                }
+                current = v.superview
+            }
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }
