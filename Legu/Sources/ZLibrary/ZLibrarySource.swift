@@ -17,6 +17,9 @@ final class ZLibrarySource: ContentSource {
         allowsOffline: true
     )
 
+    /// 构造不涉及任何隔离状态(存储属性均为常量),允许从任意上下文创建
+    nonisolated init() {}
+
     func search(_ query: String) async throws -> [SourceBook] {
         let session = ZLibSession.shared
         guard session.isLoggedIn else {
