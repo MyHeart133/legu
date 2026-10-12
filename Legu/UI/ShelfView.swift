@@ -369,7 +369,7 @@ struct BookDetailView: View {
         }
     }
 
-    /// Z-Library:整本下载 + 解析(下载后离线阅读、听书)
+    /// Z-Library:整本下载 + 解析(下载后离线阅读、听书;带进度与取消)
     @ViewBuilder
     private var zlibImportRow: some View {
         let key = offlineKey
@@ -379,9 +379,6 @@ struct BookDetailView: View {
                     .font(.subheadline)
                     .foregroundColor(.green)
                 Spacer()
-                if zlibImporting {
-                    ProgressView()
-                }
             }
         } else {
             VStack(alignment: .leading, spacing: 8) {
@@ -391,12 +388,24 @@ struct BookDetailView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                     if zlibImporting {
-                        ProgressView()
+                        Button("取消") {
+                            ZLibImporter.shared.cancel()
+                        }
+                        .buttonStyle(.bordered)
                     } else {
                         Button("下载并阅读") {
                             Task { await startZlibImport() }
                         }
                         .buttonStyle(.borderedProminent)
+                    }
+                }
+                if zlibImporting, zlibImporter.phase == .downloading {
+                    HStack(spacing: 8) {
+                        ProgressView(value: zlibImporter.progress)
+                        Text("\(Int(zlibImporter.progress * 100))%")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundColor(.secondary)
+                            .frame(width: 38, alignment: .trailing)
                     }
                 }
                 if let zlibError {
@@ -451,7 +460,11 @@ struct BookDetailView: View {
             _ = shelf.add(current.book, sourceName: current.sourceName)
             await load(useCache: false)
         } catch {
-            zlibError = error.localizedDescription
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                zlibError = nil // 用户取消,不当作错误
+            } else {
+                zlibError = error.localizedDescription
+            }
         }
     }
 

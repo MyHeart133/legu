@@ -9,6 +9,8 @@ final class ZLibraryClient {
     static let browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 
     private let session: URLSession
+    /// 进行中的下载会话(供取消)
+    private var activeDownloadSession: URLSession?
 
     private init() {
         let config = URLSessionConfiguration.ephemeral
@@ -164,8 +166,26 @@ final class ZLibraryClient {
         return Self.mapBookDetail(b, domain: domain, bookID: bookID)
     }
 
-    /// 取下载链(/file 返回 JSON,内含签名 URL)
+    /// 取下载链(/file 返回 JSON,内含签名 URL;网络抖动自动重试)
     func downloadLink(domain: String, cookies: [String: String], bookID: String) async throws -> String {
+        var lastError: Error = SourceError.network("获取下载链接失败")
+        for attempt in 0..<2 {
+            do {
+                return try await downloadLinkOnce(domain: domain, cookies: cookies, bookID: bookID)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                lastError = error
+                if attempt < 1 {
+                    try? await Task.sleep(nanoseconds: 900_000_000)
+                }
+            }
+        }
+        throw lastError
+    }
+
+    private func downloadLinkOnce(domain: String, cookies: [String: String], bookID: String) async throws -> String {
         let (id, hash) = Self.splitBookID(bookID)
         guard let url = URL(string: "https://\(domain)/eapi/book/\(id)/\(hash)/file") else {
             throw SourceError.network("域名无效")
@@ -179,23 +199,46 @@ final class ZLibraryClient {
         return link
     }
 
-    /// 下载文件(自动跟重定向)
-    func download(from link: String) async throws -> Data {
+    /// 下载文件(自动跟重定向;带进度回调;网络抖动自动重试)
+    func download(from link: String, onProgress: @escaping @MainActor (Double) -> Void) async throws -> Data {
+        var lastError: Error = SourceError.network("下载失败")
+        for attempt in 0..<3 {
+            do {
+                return try await downloadOnce(from: link, onProgress: onProgress)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                lastError = error
+                if attempt < 2 {
+                    try? await Task.sleep(nanoseconds: UInt64(800_000_000 * (attempt + 1)))
+                }
+            }
+        }
+        throw lastError
+    }
+
+    private func downloadOnce(from link: String, onProgress: @escaping @MainActor (Double) -> Void) async throws -> Data {
         guard let url = URL(string: link) else { throw SourceError.network("下载地址无效") }
         var req = URLRequest(url: url)
         req.setValue(Self.browserUA, forHTTPHeaderField: "User-Agent")
-        do {
-            let (data, response) = try await session.data(for: req)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                throw SourceError.network("下载失败 HTTP \(http.statusCode)")
-            }
-            guard data.count > 100 else { throw SourceError.network("下载内容为空") }
-            return data
-        } catch let e as SourceError {
-            throw e
-        } catch {
-            throw SourceError.network("下载失败:\(error.localizedDescription)")
+        let delegate = ZLibDownloadDelegate(onProgress: onProgress)
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 900
+        let dlSession = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        activeDownloadSession = dlSession
+        defer {
+            dlSession.invalidateAndCancel()
+            activeDownloadSession = nil
         }
+        return try await delegate.run(session: dlSession, request: req)
+    }
+
+    /// 取消进行中的下载(用户点「取消」)
+    func cancelDownload() {
+        activeDownloadSession?.invalidateAndCancel()
+        activeDownloadSession = nil
     }
 
     // MARK: - 映射(可测)
@@ -257,5 +300,69 @@ final class ZLibraryClient {
         let desc = HTMLText.cleanInline(HTMLText.string(b["description"]))
         if !desc.isEmpty { book.summary = desc }
         return book
+    }
+}
+
+/// 下载进度代理:把 URLSessionDownloadTask 的进度与结果桥接为 async
+final class ZLibDownloadDelegate: NSObject, URLSessionDownloadDelegate {
+    private let onProgress: @MainActor (Double) -> Void
+    private var continuation: CheckedContinuation<Data, Error>?
+    private var finished = false
+
+    init(onProgress: @escaping @MainActor (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func run(session: URLSession, request: URLRequest) async throws -> Data {
+        try await withCheckedThrowingContinuation { cont in
+            self.continuation = cont
+            session.downloadTask(with: request).resume()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let p = min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        let callback = onProgress
+        Task { @MainActor in
+            callback(p)
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            finish(with: .failure(SourceError.network("下载失败 HTTP \(http.statusCode)")))
+            return
+        }
+        let data = (try? Data(contentsOf: location)) ?? Data()
+        if data.count > 100 {
+            finish(with: .success(data))
+        } else {
+            finish(with: .failure(SourceError.network("下载内容为空")))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            finish(with: .failure(error))
+        }
+    }
+
+    private func finish(with result: Result<Data, Error>) {
+        guard !finished else { return }
+        finished = true
+        switch result {
+        case .success(let data):
+            continuation?.resume(returning: data)
+        case .failure(let error):
+            continuation?.resume(throwing: error)
+        }
+        continuation = nil
     }
 }

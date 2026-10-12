@@ -47,21 +47,39 @@ enum ReaderTextRenderer {
         }
         let result = NSMutableAttributedString(string: text, attributes: attrs)
         if let highlight {
-            let length = result.length
-            let location = max(0, min(highlight.location, length))
-            let hlLength = max(0, min(highlight.length, length - location))
-            if hlLength > 0 {
-                result.addAttribute(
-                    .backgroundColor,
-                    value: highlightColor(for: typo.palette),
-                    range: NSRange(location: location, length: hlLength)
-                )
-            }
+            applyHighlightAttribute(to: result, highlight: highlight, palette: typo.palette)
         }
         if typo.punctuationCompression {
             applyPunctuationCompression(result, fontSize: CGFloat(typo.fontSize), letterSpacing: CGFloat(typo.letterSpacing))
         }
         return result
+    }
+
+    /// 在已渲染文本上增量叠加朗读高亮(浅拷贝 + 背景色,避免整篇重建)
+    static func applyingHighlight(
+        to base: NSAttributedString,
+        highlight: NSRange,
+        palette: ReaderTypography.Palette
+    ) -> NSAttributedString {
+        let copy = NSMutableAttributedString(attributedString: base)
+        applyHighlightAttribute(to: copy, highlight: highlight, palette: palette)
+        return copy
+    }
+
+    private static func applyHighlightAttribute(
+        to string: NSMutableAttributedString,
+        highlight: NSRange,
+        palette: ReaderTypography.Palette
+    ) {
+        let length = string.length
+        let location = max(0, min(highlight.location, length))
+        let hlLength = max(0, min(highlight.length, length - location))
+        guard hlLength > 0 else { return }
+        string.addAttribute(
+            .backgroundColor,
+            value: highlightColor(for: palette),
+            range: NSRange(location: location, length: hlLength)
+        )
     }
 
     /// 朗读高亮色:浅色底用较浓淡黄,深色底用低透明度琥珀(按背景亮度自适应)

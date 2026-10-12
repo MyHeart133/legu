@@ -95,6 +95,36 @@ final class FollowHighlightTests: XCTestCase {
         XCTAssertGreaterThan(da, 0)
     }
 
+    func testApplyingHighlightIsIncremental() {
+        let typo = ReaderTypography()
+        let font = FontRegistry.shared.resolve(typo.fontID, bold: typo.bold)
+        let base = ReaderTextRenderer.attributedString("第一句。第二句。", typo: typo, font: font)
+        let highlighted = ReaderTextRenderer.applyingHighlight(
+            to: base, highlight: NSRange(location: 4, length: 4), palette: typo.palette
+        )
+        XCTAssertNil(base.attribute(.backgroundColor, at: 4, effectiveRange: nil), "基准串不应被修改")
+        XCTAssertNotNil(highlighted.attribute(.backgroundColor, at: 4, effectiveRange: nil))
+        XCTAssertNil(highlighted.attribute(.backgroundColor, at: 0, effectiveRange: nil))
+        XCTAssertEqual(highlighted.string, base.string)
+    }
+
+    func testRenderCachePreparedLifecycle() {
+        let cache = ReaderRenderCache()
+        let sample = NSAttributedString(string: "样本")
+        cache.prime(index: 1, key: 100, attributed: sample)
+        cache.storePrepared(index: 1, ReaderRenderCache.Prepared(key: 100, sectionHeight: 50, lines: [(0, 0), (20, 12)]))
+        XCTAssertNotNil(cache.preparedInfo(index: 1, key: 100))
+        XCTAssertNil(cache.preparedInfo(index: 1, key: 101), "键不匹配应视为未备好")
+        cache.trim(to: [1])
+        XCTAssertNotNil(cache.preparedInfo(index: 1, key: 100))
+        cache.clear()
+        XCTAssertNil(cache.preparedInfo(index: 1, key: 100))
+        // clear 后重新备好仍可取(回归:loadContent 的 clear → prepare 顺序)
+        cache.prime(index: 2, key: 200, attributed: sample)
+        cache.storePrepared(index: 2, ReaderRenderCache.Prepared(key: 200, sectionHeight: 10, lines: [(0, 0)]))
+        XCTAssertNotNil(cache.preparedInfo(index: 2, key: 200))
+    }
+
     // MARK: 高度实测(CoreText,后台可用)
 
     func testMeasureHeightCoreText() {

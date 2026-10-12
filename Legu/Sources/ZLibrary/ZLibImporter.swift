@@ -1,6 +1,7 @@
 import Foundation
 
 /// Z-Library 书籍导入:下载 EPUB → 解析 → 落盘(OfflineStore)→ 登记下载管理
+/// 带进度回调与中途取消
 @MainActor
 final class ZLibImporter: ObservableObject {
     static let shared = ZLibImporter()
@@ -27,16 +28,40 @@ final class ZLibImporter: ObservableObject {
 
     @Published private(set) var activeBookKey: String?
     @Published private(set) var phase: Phase = .idle
+    @Published private(set) var progress: Double = 0
+
+    private var importTask: Task<[SourceChapter], Error>?
 
     /// 下载并解析一本书(可重复调用:已下载的会覆盖刷新);返回章节列表
     @discardableResult
     func importBook(_ book: SourceBook) async throws -> [SourceChapter] {
+        if importTask != nil {
+            throw SourceError.unsupported("已有下载正在进行")
+        }
+        let task = Task { try await self.runImport(book) }
+        importTask = task
+        defer { importTask = nil }
+        return try await task.value
+    }
+
+    /// 取消进行中的下载
+    func cancel() {
+        importTask?.cancel()
+        importTask = nil
+        ZLibraryClient.shared.cancelDownload()
+        phase = .idle
+        progress = 0
+        activeBookKey = nil
+    }
+
+    private func runImport(_ book: SourceBook) async throws -> [SourceChapter] {
         let session = ZLibSession.shared
         guard session.isLoggedIn else {
             throw SourceError.unsupported("未登录 Z-Library(设置 → Z-Library 账号)")
         }
         let key = OfflineStore.bookKey(sourceID: book.sourceID, sourceBookID: book.sourceBookID)
         activeBookKey = key
+        progress = 0
         defer { activeBookKey = nil }
 
         do {
@@ -48,9 +73,12 @@ final class ZLibImporter: ObservableObject {
             )
 
             phase = .downloading
-            let data = try await ZLibraryClient.shared.download(from: link)
+            let data = try await ZLibraryClient.shared.download(from: link) { [weak self] p in
+                self?.progress = p
+            }
 
             phase = .parsing
+            progress = 1
             let parsed: EPUBParser.ParsedBook
             if data.prefix(2) == Data([0x50, 0x4B]) {
                 parsed = try EPUBParser.parse(data)
@@ -85,7 +113,12 @@ final class ZLibImporter: ObservableObject {
             phase = .done
             return chapters
         } catch {
-            phase = .failed(error.localizedDescription)
+            if Task.isCancelled {
+                phase = .idle
+                progress = 0
+            } else {
+                phase = .failed(error.localizedDescription)
+            }
             throw error
         }
     }

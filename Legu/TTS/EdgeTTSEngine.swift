@@ -259,8 +259,11 @@ actor EdgeConnectionPool {
     private var idle: Entry?
     private var reuseDisabled = false
     private var borrowedFailures = 0
+    private var idleCloseTask: Task<Void, Never>?
 
     func borrow(isNewEndpoint: Bool) -> Entry? {
+        idleCloseTask?.cancel()
+        idleCloseTask = nil
         guard !reuseDisabled else { return nil }
         guard let entry = idle else { return nil }
         idle = nil
@@ -279,6 +282,25 @@ actor EdgeConnectionPool {
             return
         }
         idle = entry
+        scheduleIdleClose()
+    }
+
+    /// 空闲超时自动关闭连接(避免闲置时被服务端心跳持续唤醒,省电)
+    private func scheduleIdleClose() {
+        idleCloseTask?.cancel()
+        idleCloseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.closeIdle()
+        }
+    }
+
+    private func closeIdle() {
+        if let entry = idle {
+            entry.task.cancel(with: .normalClosure, reason: nil)
+            entry.session.invalidateAndCancel()
+            idle = nil
+        }
     }
 
     func noteBorrowedSuccess() {
@@ -289,11 +311,9 @@ actor EdgeConnectionPool {
         borrowedFailures += 1
         if borrowedFailures >= 3 {
             reuseDisabled = true
-            if let entry = idle {
-                entry.task.cancel(with: .normalClosure, reason: nil)
-                entry.session.invalidateAndCancel()
-                idle = nil
-            }
+            idleCloseTask?.cancel()
+            idleCloseTask = nil
+            closeIdle()
         }
     }
 }
