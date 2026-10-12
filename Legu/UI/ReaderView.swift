@@ -21,6 +21,7 @@ struct ReaderView: View {
     @State private var windowError: String?
     @State private var navToken = 0
     @State private var scrollBox = ReaderScrollBox()
+    @State private var renderCache = ReaderRenderCache()
     @State private var hasScrolledDown = false
     @State private var loading = false
     @State private var errorText: String?
@@ -56,16 +57,36 @@ struct ReaderView: View {
         (index >= 0 && index < chapters.count) ? chapters[index] : nil
     }
 
-    /// 单章渲染签名(章节文本 + 排版 + 该章高亮;变化时重建文本视图)
-    private func chapterRevision(_ wc: ReaderWindowChapter) -> Int {
+    /// 渲染签名(章节内容哈希 + 排版 + 该章高亮;变化时才重建 attributed)
+    private static func renderKey(baseHash: Int, typo: ReaderTypography, highlight: NSRange?) -> Int {
         var hasher = Hasher()
-        hasher.combine(wc.text)
+        hasher.combine(baseHash)
         hasher.combine(typo)
-        if wc.index == index {
-            hasher.combine(followRendered?.location ?? -1)
-            hasher.combine(followRendered?.length ?? -1)
-        }
+        hasher.combine(highlight?.location ?? -1)
+        hasher.combine(highlight?.length ?? -1)
         return hasher.finalize()
+    }
+
+    /// 后台构建:章节文本 → attributed + 高度(避免章节衔接时阻塞主线程)
+    private func prepareChapter(index chapterIndex: Int, text: String) async -> (baseHash: Int, height: CGFloat) {
+        var hasher = Hasher()
+        hasher.combine(text)
+        let baseHash = hasher.finalize()
+        let typo = self.typo
+        let font = resolvedFont
+        let width = max(120, (scrollBox.scrollView?.bounds.width ?? UIScreen.main.bounds.width) - typo.horizontalPadding * 2)
+        let result = await Task.detached(priority: .userInitiated) {
+            let attributed = ReaderTextRenderer.attributedString(text, typo: typo, font: font)
+            let height = ReaderTextRenderer.measureHeight(attributed, width: width)
+            return (attributed, height)
+        }.value
+        renderCache.prime(
+            index: chapterIndex,
+            key: Self.renderKey(baseHash: baseHash, typo: typo, highlight: nil),
+            attributed: result.0
+        )
+        let sectionHeight = result.1 + ceil(typo.fontSize * 0.85 * 1.3) + 18 + 24
+        return (baseHash, sectionHeight)
     }
 
     var body: some View {
@@ -162,17 +183,21 @@ struct ReaderView: View {
                     }
                 } else {
                     ForEach(window) { wc in
+                        let highlight = wc.index == index ? followRendered : nil
+                        let key = Self.renderKey(baseHash: wc.baseHash, typo: typo, highlight: highlight)
+                        let attributed = renderCache.attributed(index: wc.index, key: key) {
+                            ReaderTextRenderer.attributedString(
+                                wc.text, typo: typo, font: resolvedFont, highlight: highlight
+                            )
+                        }
                         VStack(alignment: .leading, spacing: 0) {
                             Text(wc.title)
                                 .font(swiftUIFont(size: typo.fontSize * 0.85))
                                 .foregroundColor(Color(hex: palette.secondary))
                                 .padding(.bottom, 18)
                             ReaderTextView(
-                                attributed: ReaderTextRenderer.attributedString(
-                                    wc.text, typo: typo, font: resolvedFont,
-                                    highlight: wc.index == index ? followRendered : nil
-                                ),
-                                revision: chapterRevision(wc),
+                                attributed: attributed,
+                                revision: key,
                                 onTap: { toggleControls() },
                                 scrollTarget: wc.index == index ? followRendered : nil,
                                 scrollToken: followScrollToken
@@ -575,8 +600,10 @@ struct ReaderView: View {
         do {
             let text = try await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
             guard !Task.isCancelled else { return }
-            let height = measureChapterHeight(text: text, title: chapter.title)
-            window = [ReaderWindowChapter(index: index, title: chapter.title, text: text, height: height)]
+            let prepared = await prepareChapter(index: index, text: text)
+            guard !Task.isCancelled else { return }
+            renderCache.clear()
+            window = [ReaderWindowChapter(index: index, title: chapter.title, text: text, baseHash: prepared.baseHash, height: prepared.height)]
             hasScrolledDown = false
             loading = false
             saveProgress(chapter)
@@ -608,10 +635,13 @@ struct ReaderView: View {
                 let text = try await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
                 guard typo.readerMode == "scroll", !Task.isCancelled else { return }
                 guard !window.contains(where: { $0.index == next }) else { return }
-                let height = measureChapterHeight(text: text, title: chapter.title)
-                window.append(ReaderWindowChapter(index: next, title: chapter.title, text: text, height: height))
+                let prepared = await prepareChapter(index: next, text: text)
+                guard typo.readerMode == "scroll", !Task.isCancelled else { return }
+                guard !window.contains(where: { $0.index == next }) else { return }
+                window.append(ReaderWindowChapter(index: next, title: chapter.title, text: text, baseHash: prepared.baseHash, height: prepared.height))
                 windowError = nil
                 trimWindow(keepAround: index)
+                prefetch(from: next, count: 2)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                     checkWindowLoad()
                 }
@@ -634,15 +664,17 @@ struct ReaderView: View {
                 let text = try await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
                 guard typo.readerMode == "scroll", !Task.isCancelled else { return }
                 guard !window.contains(where: { $0.index == prev }) else { return }
-                let height = measureChapterHeight(text: text, title: chapter.title)
+                let prepared = await prepareChapter(index: prev, text: text)
+                guard typo.readerMode == "scroll", !Task.isCancelled else { return }
+                guard !window.contains(where: { $0.index == prev }) else { return }
                 let sv = scrollBox.scrollView
                 let oldY = sv?.contentOffset.y ?? 0
-                window.insert(ReaderWindowChapter(index: prev, title: chapter.title, text: text, height: height), at: 0)
+                window.insert(ReaderWindowChapter(index: prev, title: chapter.title, text: text, baseHash: prepared.baseHash, height: prepared.height), at: 0)
                 trimWindow(keepAround: index)
                 if let sv {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
                         let maxY = max(0, sv.contentSize.height - sv.bounds.height + sv.adjustedContentInset.bottom)
-                        sv.setContentOffset(CGPoint(x: 0, y: min(maxY, oldY + height)), animated: false)
+                        sv.setContentOffset(CGPoint(x: 0, y: min(maxY, oldY + prepared.height)), animated: false)
                     }
                 }
             } catch {
@@ -699,21 +731,6 @@ struct ReaderView: View {
         }
     }
 
-    /// 整段高度实测(标题 + 间距 + 正文;用于窗口定位与插入补偿)
-    private func measureChapterHeight(text: String, title: String) -> CGFloat {
-        let fullWidth = scrollBox.scrollView?.bounds.width ?? UIScreen.main.bounds.width
-        let width = max(120, fullWidth - typo.horizontalPadding * 2)
-        let tv = UITextView()
-        tv.textContainerInset = .zero
-        tv.textContainer.lineFragmentPadding = 0
-        tv.isScrollEnabled = false
-        tv.attributedText = ReaderTextRenderer.attributedString(text, typo: typo, font: resolvedFont)
-        tv.frame = CGRect(x: 0, y: 0, width: width, height: 0)
-        let textHeight = tv.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
-        let titleHeight = ceil(typo.fontSize * 0.85 * 1.3)
-        return ceil(textHeight) + titleHeight + 18 + 24
-    }
-
     /// 窗口裁剪:超过上限时丢弃离当前章更远的一侧(丢顶部时补偿滚动位移)
     private func trimWindow(keepAround center: Int) {
         let maxCount = 12
@@ -732,6 +749,7 @@ struct ReaderView: View {
                 _ = window.removeLast()
             }
         }
+        renderCache.trim(to: Set(window.map { $0.index }))
     }
 
     private func scrollToTop() {
@@ -742,17 +760,24 @@ struct ReaderView: View {
     }
 
     private func prefetchNext() {
-        let next = index + 1
-        guard next < chapters.count else { return }
-        let chapter = chapters[next]
-        let key = BookCache.chapterKey(
-            sourceID: book.sourceID,
-            bookID: book.sourceBookID,
-            chapterID: chapter.id
-        )
-        guard !BookCache.shared.hasChapter(key) else { return }
-        Task {
-            _ = try? await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
+        prefetch(from: index, count: 2)
+    }
+
+    /// 预取后续章节正文(连续滚动衔接更顺滑;在线书也提前拉好)
+    private func prefetch(from start: Int, count: Int) {
+        for delta in 1...max(1, count) {
+            let next = start + delta
+            guard next < chapters.count else { continue }
+            let chapter = chapters[next]
+            let key = BookCache.chapterKey(
+                sourceID: book.sourceID,
+                bookID: book.sourceBookID,
+                chapterID: chapter.id
+            )
+            guard !BookCache.shared.hasChapter(key) else { continue }
+            Task {
+                _ = try? await ChapterLoader.load(sourceStore: sourceStore, book: book, chapter: chapter)
+            }
         }
     }
 }
@@ -764,6 +789,8 @@ struct ReaderWindowChapter: Identifiable {
     let index: Int
     let title: String
     let text: String
+    /// 正文哈希(渲染缓存键的一部分)
+    let baseHash: Int
     /// 实测整段高度(标题 + 间距 + 正文)
     let height: CGFloat
 
@@ -782,7 +809,8 @@ final class ReaderScrollBox: NSObject {
         observation = sv.observe(\.contentOffset, options: [.new]) { [weak self] scroll, _ in
             guard let handler = self?.onOffsetChange else { return }
             let y = scroll.contentOffset.y
-            Task { @MainActor in
+            // KVO 只在主线程回调;内联执行,避免每帧一个 Task 的开销(耗电优化)
+            MainActor.assumeIsolated {
                 handler(y, scroll)
             }
         }
@@ -810,4 +838,31 @@ private struct ReaderScrollBridge: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {}
+}
+
+/// 章节渲染缓存:按签名复用 attributed,避免每次界面刷新都重建全文(耗电 / 卡顿优化)
+@MainActor
+final class ReaderRenderCache {
+    private var store: [Int: (key: Int, attributed: NSAttributedString)] = [:]
+
+    func prime(index: Int, key: Int, attributed: NSAttributedString) {
+        store[index] = (key, attributed)
+    }
+
+    func attributed(index: Int, key: Int, build: () -> NSAttributedString) -> NSAttributedString {
+        if let hit = store[index], hit.key == key {
+            return hit.attributed
+        }
+        let value = build()
+        store[index] = (key, value)
+        return value
+    }
+
+    func trim(to indices: Set<Int>) {
+        store = store.filter { indices.contains($0.key) }
+    }
+
+    func clear() {
+        store.removeAll()
+    }
 }

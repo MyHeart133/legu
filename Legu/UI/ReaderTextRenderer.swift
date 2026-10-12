@@ -1,3 +1,4 @@
+import CoreText
 import UIKit
 
 /// 正文渲染器:把(已规范化的)章节文本 + 排版参数 → NSAttributedString
@@ -71,6 +72,21 @@ enum ReaderTextRenderer {
         let luminance = 0.299 * r + 0.587 * g + 0.114 * b
         let alpha: CGFloat = luminance > 0.5 ? 0.55 : 0.30
         return UIColor(red: 1.0, green: 0.83, blue: 0.29, alpha: alpha)
+    }
+
+    /// CoreText 实测整段高度(线程安全,可在后台线程调用;用于连续滚动的章节定位与补偿)
+    nonisolated static func measureHeight(_ attributed: NSAttributedString, width: CGFloat) -> CGFloat {
+        guard attributed.length > 0, width > 10 else { return 0 }
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+        var fitRange = CFRange()
+        let size = CTFramesetterSuggestFrameSizeWithConstraints(
+            framesetter,
+            CFRange(location: 0, length: 0),
+            nil,
+            CGSize(width: width, height: .greatestFiniteMagnitude),
+            &fitRange
+        )
+        return ceil(size.height)
     }
 
     // MARK: - 标点挤压

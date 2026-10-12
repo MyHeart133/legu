@@ -95,6 +95,23 @@ final class FollowHighlightTests: XCTestCase {
         XCTAssertGreaterThan(da, 0)
     }
 
+    // MARK: 高度实测(CoreText,后台可用)
+
+    func testMeasureHeightCoreText() {
+        let typo = ReaderTypography()
+        let font = FontRegistry.shared.resolve(typo.fontID, bold: typo.bold)
+        let short = ReaderTextRenderer.attributedString("短句。", typo: typo, font: font)
+        let long = ReaderTextRenderer.attributedString(
+            String(repeating: "很长的一段文字内容。", count: 200),
+            typo: typo, font: font
+        )
+        let shortHeight = ReaderTextRenderer.measureHeight(short, width: 300)
+        let longHeight = ReaderTextRenderer.measureHeight(long, width: 300)
+        XCTAssertGreaterThan(shortHeight, 0)
+        XCTAssertGreaterThan(longHeight, shortHeight)
+        XCTAssertEqual(ReaderTextRenderer.measureHeight(short, width: 0), 0)
+    }
+
     // MARK: NowReading
 
     func testNowReadingEquatable() {
