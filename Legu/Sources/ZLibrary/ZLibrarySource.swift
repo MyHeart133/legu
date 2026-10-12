@@ -6,9 +6,10 @@ import Foundation
 final class ZLibrarySource: ContentSource {
     static let identifier = "zlib"
 
-    let identifier = ZLibrarySource.identifier
-    let displayName = "Z-Library"
-    let capabilities = SourceCapabilities(
+    // 协议属性为同步非隔离要求:常量属性必须 nonisolated
+    nonisolated let identifier = "zlib"
+    nonisolated let displayName = "Z-Library"
+    nonisolated let capabilities = SourceCapabilities(
         search: true,
         metadata: true,
         onlineReading: false,
