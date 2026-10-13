@@ -2,6 +2,7 @@ import XCTest
 @testable import Legu
 
 /// 听读同步:偏移(UTF-16,渲染坐标)/ 高亮渲染 / NowReading
+@MainActor
 final class FollowHighlightTests: XCTestCase {
 
     // MARK: 偏移(UTF-16,渲染坐标)
