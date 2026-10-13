@@ -72,6 +72,21 @@ struct ReaderView: View {
         return hasher.finalize()
     }
 
+    /// 显示用文本:基准排版(缓存)+ 按需增量叠加跟读高亮(缓存)
+    private func displayText(for wc: ReaderWindowChapter) -> (key: Int, attributed: NSAttributedString) {
+        let highlight = wc.index == index ? followRendered : nil
+        let baseKey = Self.renderKey(baseHash: wc.baseHash, typo: typo, highlight: nil)
+        let base = renderCache.attributed(index: wc.index, key: baseKey) {
+            ReaderTextRenderer.attributedString(wc.text, typo: typo, font: resolvedFont)
+        }
+        guard let highlight else { return (baseKey, base) }
+        let hlKey = Self.renderKey(baseHash: wc.baseHash, typo: typo, highlight: highlight)
+        let display = renderCache.attributed(index: wc.index, key: hlKey) {
+            ReaderTextRenderer.applyingHighlight(to: base, highlight: highlight, palette: typo.palette)
+        }
+        return (hlKey, display)
+    }
+
     /// 后台构建(幂等):章节文本 → attributed + 高度 + 行表;已备好的直接复用
     private func prepareChapter(index chapterIndex: Int, text: String) async -> (baseHash: Int, height: CGFloat) {
         var hasher = Hasher()
@@ -197,30 +212,15 @@ struct ReaderView: View {
                     }
                 } else {
                     ForEach(window) { wc in
-                        let highlight = wc.index == index ? followRendered : nil
-                        let baseKey = Self.renderKey(baseHash: wc.baseHash, typo: typo, highlight: nil)
-                        let base = renderCache.attributed(index: wc.index, key: baseKey) {
-                            ReaderTextRenderer.attributedString(wc.text, typo: typo, font: resolvedFont)
-                        }
-                        let key: Int
-                        let attributed: NSAttributedString
-                        if let highlight {
-                            key = Self.renderKey(baseHash: wc.baseHash, typo: typo, highlight: highlight)
-                            attributed = renderCache.attributed(index: wc.index, key: key) {
-                                ReaderTextRenderer.applyingHighlight(to: base, highlight: highlight, palette: typo.palette)
-                            }
-                        } else {
-                            key = baseKey
-                            attributed = base
-                        }
+                        let display = displayText(for: wc)
                         VStack(alignment: .leading, spacing: 0) {
                             Text(wc.title)
                                 .font(swiftUIFont(size: typo.fontSize * 0.85))
                                 .foregroundColor(Color(hex: palette.secondary))
                                 .padding(.bottom, 18)
                             ReaderTextView(
-                                attributed: attributed,
-                                revision: key,
+                                attributed: display.attributed,
+                                revision: display.key,
                                 onTap: { toggleControls() },
                                 scrollTarget: wc.index == index ? followRendered : nil,
                                 scrollToken: followScrollToken
